@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Cinzel', Georgia, serif;
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    --felt-deep: #061811;
+    --felt-mid: #0b291e;
+    --walnut-dark: #1c120c;
+    --walnut-mid: #2b1b12;
+    --brass-accent: #c89d54;
+  }
+
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: var(--font-sans);
+    background-color: #081510;
+    color: #f4efe6;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+    letter-spacing: -0.015em;
+  }
+
+  p,
+  blockquote {
+    text-wrap: pretty;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.perspective-table {
+  perspective: 1100px;
+  transform-style: preserve-3d;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+@keyframes cardBreathe {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -2.5px, 0);
+  }
+}
+
+.animate-card-breathe {
+  animation: cardBreathe 4.2s ease-in-out infinite;
+}
+
+@keyframes modalEnter {
+  0% {
+    opacity: 0;
+    transform: scale(0.95) translate3d(0, 8px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+}
+
+.animate-modal-enter {
+  animation: modalEnter 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Custom hairline scrollbars for modals */
+.thin-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.thin-scroll::-webkit-scrollbar-track {
+  background: rgba(12, 24, 18, 0.4);
+}
+
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: rgba(200, 157, 84, 0.35);
+  border-radius: 9999px;
+}
