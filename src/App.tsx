@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActionPickerModal } from './components/ActionPickerModal';
+import { Check, Lock, RotateCcw, X } from 'lucide-react';
 import { BuildStackView } from './components/BuildStackView';
 import { CardSvg } from './components/CardSvg';
 import { FaceUpCapturedDeck, PeripheralOpponents } from './components/PeripheralOpponents';
@@ -41,10 +41,41 @@ interface DragSession {
   originY: number;
 }
 
-interface PickerSession {
+interface InlineActionState {
   card: Card;
-  droppedTargetId: string | null;
-  dugTargetSeat?: number | null;
+  targetItemId: string | null;
+  dugTargetSeat: number | null;
+}
+
+interface PendingUndoState {
+  prevState: SACasinoState;
+  label: string;
+  expiresAt: number;
+}
+
+function getBuildPillLabel(
+  option: BuildOption,
+  playedRank: number
+): { text: string; isKeep: boolean; isLocked: boolean } {
+  if (option.resultingCemented && option.targetValue === playedRank) {
+    return {
+      text: `Keep ${option.targetValue}`,
+      isKeep: true,
+      isLocked: true,
+    };
+  }
+  if (option.resultingCemented) {
+    return {
+      text: `Build ${option.targetValue} (Lock)`,
+      isKeep: false,
+      isLocked: true,
+    };
+  }
+  return {
+    text: `Build ${option.targetValue}`,
+    isKeep: false,
+    isLocked: false,
+  };
 }
 
 function nextSeed(prev?: number): number {
@@ -90,7 +121,9 @@ export function App() {
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [dragState, setDragState] = useState<DragSession | null>(null);
   const [hoveredDropTargetId, setHoveredDropTargetId] = useState<string | null>(null);
-  const [pickerState, setPickerState] = useState<PickerSession | null>(null);
+  const [inlineActionState, setInlineActionState] = useState<InlineActionState | null>(null);
+  const [pendingUndo, setPendingUndo] = useState<PendingUndoState | null>(null);
+  const [undoRemainingSec, setUndoRemainingSec] = useState<number>(0);
   const [errorToast, setErrorToast] = useState<string | null>(null);
 
   const [shuffleTriggerKey, setShuffleTriggerKey] = useState(1);
@@ -209,8 +242,55 @@ export function App() {
     [playDealSequenceFoley, scheduleFoley]
   );
 
-  // Bot Turn Scheduler (680ms natural cadence)
+  const commitPlayerMove = useCallback(
+    (prevState: SACasinoState, action: SACasinoAction, label: string): boolean => {
+      const ok = applyAndReact(prevState, action);
+      if (ok) {
+        setPendingUndo({
+          prevState,
+          label,
+          expiresAt: Date.now() + 4000,
+        });
+        setUndoRemainingSec(4);
+      }
+      return ok;
+    },
+    [applyAndReact]
+  );
+
+  // 4-second Cancel timer countdown & auto-expiry
   useEffect(() => {
+    if (!pendingUndo) {
+      setUndoRemainingSec(0);
+      return;
+    }
+
+    const updateRemaining = () => {
+      const remainingMs = pendingUndo.expiresAt - Date.now();
+      if (remainingMs <= 0) {
+        setPendingUndo(null);
+        setUndoRemainingSec(0);
+      } else {
+        setUndoRemainingSec(Math.ceil(remainingMs / 1000));
+      }
+    };
+
+    updateRemaining();
+    const intervalId = window.setInterval(updateRemaining, 200);
+    const timeoutId = window.setTimeout(() => {
+      setPendingUndo(null);
+      setUndoRemainingSec(0);
+    }, Math.max(0, pendingUndo.expiresAt - Date.now()));
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [pendingUndo]);
+
+  // Bot Turn Scheduler (680ms natural cadence; paused during 4s Cancel window)
+  useEffect(() => {
+    if (pendingUndo !== null) return;
     if (gameState.phase !== 'PLAYING') return;
     const activeSeat = gameState.currentTurnSeat;
     const activePlayer = gameState.players[activeSeat];
@@ -223,9 +303,9 @@ export function App() {
     }, 680);
 
     return () => window.clearTimeout(timerId);
-  }, [gameState, applyAndReact]);
+  }, [gameState, pendingUndo, applyAndReact]);
 
-  // Round 1 -> Round 2 automatic transition for 1v1 (1350ms)
+  // Round 1 -> Round 2 automatic transition for 1v1 (1350ms; paused during 4s Cancel window)
   const handleDealNextRound = useCallback(() => {
     sharedAudioEngine.unlock();
     applyAndReact(gameState, {
@@ -236,12 +316,13 @@ export function App() {
   }, [gameState, applyAndReact]);
 
   useEffect(() => {
+    if (pendingUndo !== null) return;
     if (gameState.phase !== 'ROUND_TRANSITION') return;
     const timerId = window.setTimeout(() => {
       handleDealNextRound();
     }, 1350);
     return () => window.clearTimeout(timerId);
-  }, [gameState.phase, handleDealNextRound]);
+  }, [gameState.phase, pendingUndo, handleDealNextRound]);
 
   const tableDigMerges = useMemo(
     () =>
@@ -300,13 +381,13 @@ export function App() {
     };
   }, [myHand, viewerView.table, viewerView.players, isMyTurn, isFinalDealCard]);
 
-  // Options for the currently dragged or selected card (for table highlights & modal)
+  // Options for the currently dragged or selected card (for table highlights & inline pills)
   const inspectedHandCard = useMemo(() => {
     if (dragState) return dragState.card;
-    if (pickerState) return pickerState.card;
+    if (inlineActionState) return inlineActionState.card;
     if (selectedCardId) return myHand.find((c) => c.id === selectedCardId) ?? null;
     return null;
-  }, [dragState, pickerState, selectedCardId, myHand]);
+  }, [dragState, inlineActionState, selectedCardId, myHand]);
 
   const activeCardMoves = useMemo(() => {
     if (!inspectedHandCard || !isMyTurn) {
@@ -391,7 +472,9 @@ export function App() {
       setSelectedCardId(null);
       setDragState(null);
       setHoveredDropTargetId(null);
-      setPickerState(null);
+      setInlineActionState(null);
+      setPendingUndo(null);
+      setUndoRemainingSec(0);
       setErrorToast(null);
 
       setGameState((prev) =>
@@ -447,7 +530,7 @@ export function App() {
       if (!isMyTurn) return;
       sharedAudioEngine.unlock();
       setSelectedCardId(card.id);
-      setPickerState({ card, droppedTargetId: null });
+      setInlineActionState({ card, targetItemId: null, dugTargetSeat: null });
     },
     [isMyTurn]
   );
@@ -457,7 +540,7 @@ export function App() {
       if (!isMyTurn) return;
       sharedAudioEngine.unlock();
       setSelectedCardId(card.id);
-      setPickerState(null);
+      setInlineActionState(null);
       setDragState({
         card,
         clientX,
@@ -503,135 +586,262 @@ export function App() {
         players: viewerView.players,
       });
 
-      // If dropped onto open center felt away from any card/build and no capture/build is possible, Trail directly
-      if (
-        !dropTargetId &&
-        captures.length === 0 &&
-        builds.length === 0 &&
-        trail.valid &&
-        clientY < window.innerHeight - 165
-      ) {
-        const ok = applyAndReact(gameState, {
-          type: 'TRAIL',
-          playerSeat: 0,
-          payload: { cardId: card.id },
-        });
-        if (ok) {
+      // 1. Dropped anywhere on open felt away from any card/build: immediately Trail when valid
+      if (!dropTargetId) {
+        const openFeltCutoffY = window.innerHeight - (isMobile ? 145 : 175);
+        if (clientY < openFeltCutoffY) {
+          if (trail.valid) {
+            const ok = commitPlayerMove(
+              gameState,
+              {
+                type: 'TRAIL',
+                playerSeat: 0,
+                payload: { cardId: card.id },
+              },
+              `Place ${card.label}`
+            );
+            if (ok) {
+              setSelectedCardId(null);
+              setInlineActionState(null);
+            }
+          } else {
+            setSelectedCardId(null);
+            setInlineActionState(null);
+            setErrorToast(trail.reason ?? `Cannot place ${card.label} on the table.`);
+          }
+        } else {
           setSelectedCardId(null);
+          setInlineActionState(null);
         }
         return;
       }
 
-      // Open ActionPickerModal prioritized for dropTargetId so player never accidentally trails
+      // 2. Dropped onto an existing table card/build
+      const matchingCaptures = captures.filter((opt) =>
+        opt.capturedItemIds.includes(dropTargetId)
+      );
+      const matchingBuilds = builds.filter((opt) =>
+        opt.targetItemIds.includes(dropTargetId)
+      );
+
+      if (matchingCaptures.length === 0 && matchingBuilds.length === 0) {
+        if (trail.valid) {
+          const ok = commitPlayerMove(
+            gameState,
+            {
+              type: 'TRAIL',
+              playerSeat: 0,
+              payload: { cardId: card.id },
+            },
+            `Place ${card.label}`
+          );
+          if (ok) {
+            setSelectedCardId(null);
+            setInlineActionState(null);
+          }
+        } else {
+          setSelectedCardId(null);
+          setInlineActionState(null);
+          setErrorToast(trail.reason ?? `Cannot play ${card.label} on that target.`);
+        }
+        return;
+      }
+
       setSelectedCardId(card.id);
-      setPickerState({ card, droppedTargetId: dropTargetId });
+      setInlineActionState({ card, targetItemId: dropTargetId, dugTargetSeat: null });
     },
     [
       hoveredDropTargetId,
       isMyTurn,
+      isMobile,
       myHand,
       viewerView.table,
       viewerView.players,
       viewerView.mode,
       viewerView.roundNumber,
       isFinalDealCard,
-      applyAndReact,
+      commitPlayerMove,
       gameState,
     ]
   );
 
-  // Clicking a table card/build while a hand card is selected opens the picker targeted to it
+  // Clicking a table card/build while holding/selecting a hand card opens inline pills targeted to it
   const handleSelectTableItem = useCallback(
     (item: TableItem) => {
       if (!isMyTurn) return;
       sharedAudioEngine.unlock();
-      const chosenCard =
-        (selectedCardId ? myHand.find((c) => c.id === selectedCardId) : null) ??
-        myHand.find((c) => capturableCardIds.has(c.id) || buildableCardIds.has(c.id));
 
-      if (chosenCard) {
-        setSelectedCardId(chosenCard.id);
-        setPickerState({ card: chosenCard, droppedTargetId: item.id });
+      const selectedCard = selectedCardId
+        ? myHand.find((c) => c.id === selectedCardId) ?? null
+        : null;
+
+      if (selectedCard) {
+        const capMatches = findValidCaptureOptions(
+          selectedCard,
+          myHand,
+          viewerView.table,
+          0,
+          isFinalDealCard,
+          viewerView.players
+        ).some((opt) => opt.capturedItemIds.includes(item.id));
+        const bldMatches = findValidBuildOptions(
+          selectedCard,
+          myHand,
+          viewerView.table,
+          0,
+          viewerView.players
+        ).some((opt) => opt.targetItemIds.includes(item.id));
+
+        if (capMatches || bldMatches) {
+          setInlineActionState({
+            card: selectedCard,
+            targetItemId: item.id,
+            dugTargetSeat: null,
+          });
+        } else {
+          setErrorToast(`${selectedCard.label} cannot capture or build on that target.`);
+        }
+        return;
+      }
+
+      const matchingCard = myHand.find(
+        (c) =>
+          findValidCaptureOptions(
+            c,
+            myHand,
+            viewerView.table,
+            0,
+            isFinalDealCard,
+            viewerView.players
+          ).some((opt) => opt.capturedItemIds.includes(item.id)) ||
+          findValidBuildOptions(c, myHand, viewerView.table, 0, viewerView.players).some(
+            (opt) => opt.targetItemIds.includes(item.id)
+          )
+      );
+
+      if (matchingCard) {
+        setSelectedCardId(matchingCard.id);
+        setInlineActionState({
+          card: matchingCard,
+          targetItemId: item.id,
+          dugTargetSeat: null,
+        });
       }
     },
-    [isMyTurn, selectedCardId, myHand, capturableCardIds, buildableCardIds]
+    [isMyTurn, selectedCardId, myHand, viewerView.table, viewerView.players, isFinalDealCard]
   );
 
-  // Modal move execution handlers
+  // Move execution handlers
   const handleExecuteCapture = useCallback(
     (option: CaptureOption) => {
-      if (!pickerState) return;
-      const ok = applyAndReact(gameState, {
-        type: 'CAPTURE',
-        playerSeat: 0,
-        payload: {
-          cardId: pickerState.card.id,
-          capturedItemIds: option.capturedItemIds,
-          dugCapturedFromSeat: option.dugCapturedFromSeat ?? null,
+      if (!inlineActionState) return;
+      const ok = commitPlayerMove(
+        gameState,
+        {
+          type: 'CAPTURE',
+          playerSeat: 0,
+          payload: {
+            cardId: inlineActionState.card.id,
+            capturedItemIds: option.capturedItemIds,
+            dugCapturedFromSeat: option.dugCapturedFromSeat ?? null,
+          },
         },
-      });
+        option.description
+      );
       if (ok) {
-        setPickerState(null);
+        setInlineActionState(null);
         setSelectedCardId(null);
       }
     },
-    [pickerState, applyAndReact, gameState]
+    [inlineActionState, commitPlayerMove, gameState]
   );
 
   const handleExecuteBuild = useCallback(
     (option: BuildOption) => {
-      if (!pickerState) return;
-      const ok = applyAndReact(gameState, {
-        type: 'BUILD',
-        playerSeat: 0,
-        payload: {
-          cardId: pickerState.card.id,
-          targetItemIds: option.targetItemIds,
-          targetValue: option.targetValue,
-          mode: option.buildMode,
-          dugCapturedFromSeat: option.dugCapturedFromSeat ?? null,
+      if (!inlineActionState) return;
+      const { text } = getBuildPillLabel(option, inlineActionState.card.rank);
+      const ok = commitPlayerMove(
+        gameState,
+        {
+          type: 'BUILD',
+          playerSeat: 0,
+          payload: {
+            cardId: inlineActionState.card.id,
+            targetItemIds: option.targetItemIds,
+            targetValue: option.targetValue,
+            mode: option.buildMode,
+            dugCapturedFromSeat: option.dugCapturedFromSeat ?? null,
+          },
         },
-      });
+        text
+      );
       if (ok) {
-        setPickerState(null);
+        setInlineActionState(null);
         setSelectedCardId(null);
       }
     },
-    [pickerState, applyAndReact, gameState]
+    [inlineActionState, commitPlayerMove, gameState]
   );
 
   const handleExecuteTrail = useCallback(() => {
-    if (!pickerState) return;
-    const ok = applyAndReact(gameState, {
-      type: 'TRAIL',
-      playerSeat: 0,
-      payload: { cardId: pickerState.card.id },
-    });
+    if (!inlineActionState) return;
+    const ok = commitPlayerMove(
+      gameState,
+      {
+        type: 'TRAIL',
+        playerSeat: 0,
+        payload: { cardId: inlineActionState.card.id },
+      },
+      `Place ${inlineActionState.card.label}`
+    );
     if (ok) {
-      setPickerState(null);
+      setInlineActionState(null);
       setSelectedCardId(null);
     }
-  }, [pickerState, applyAndReact, gameState]);
+  }, [inlineActionState, commitPlayerMove, gameState]);
 
   const handleExecuteTableDigMerge = useCallback(
     (merge: TableDigMergeOption) => {
       sharedAudioEngine.unlock();
-      const ok = applyAndReact(gameState, {
-        type: 'DIG_TABLE_TO_BUILD',
-        playerSeat: 0,
-        payload: {
-          buildId: merge.buildId,
-          targetItemIds: merge.targetItemIds,
-          dugFromSeat: merge.dugFromSeat,
+      const ok = commitPlayerMove(
+        gameState,
+        {
+          type: 'DIG_TABLE_TO_BUILD',
+          playerSeat: 0,
+          payload: {
+            buildId: merge.buildId,
+            targetItemIds: merge.targetItemIds,
+            dugFromSeat: merge.dugFromSeat,
+          },
         },
-      });
+        `Dig ${merge.description}`
+      );
       if (ok) {
-        setPickerState(null);
+        setInlineActionState(null);
         setSelectedCardId(null);
       }
     },
-    [applyAndReact, gameState]
+    [commitPlayerMove, gameState]
   );
+
+  const handleCancelPendingMove = useCallback(() => {
+    if (!pendingUndo) return;
+    sharedAudioEngine.unlock();
+    setGameState(pendingUndo.prevState);
+    setPendingUndo(null);
+    setUndoRemainingSec(0);
+    setInlineActionState(null);
+    setSelectedCardId(null);
+    setErrorToast(null);
+    sharedAudioEngine.playCardSlide();
+  }, [pendingUndo]);
+
+  const handleConfirmPendingMove = useCallback(() => {
+    if (!pendingUndo) return;
+    sharedAudioEngine.unlock();
+    setPendingUndo(null);
+    setUndoRemainingSec(0);
+  }, [pendingUndo]);
 
   const diggableSeats = useMemo(() => {
     const seats = new Set<number>();
@@ -670,9 +880,9 @@ export function App() {
           activeCardMoves.buildOptions.some((o) => o.dugCapturedFromSeat === seat);
         if (hasDigMove) {
           setSelectedCardId(inspectedHandCard.id);
-          setPickerState({
+          setInlineActionState({
             card: inspectedHandCard,
-            droppedTargetId: null,
+            targetItemId: null,
             dugTargetSeat: seat,
           });
           return;
@@ -702,9 +912,9 @@ export function App() {
 
       if (digCard) {
         setSelectedCardId(digCard.id);
-        setPickerState({
+        setInlineActionState({
           card: digCard,
-          droppedTargetId: null,
+          targetItemId: null,
           dugTargetSeat: seat,
         });
         return;
@@ -726,6 +936,80 @@ export function App() {
       handleExecuteTableDigMerge,
     ]
   );
+
+  const inlineActionData = useMemo(() => {
+    if (!inlineActionState || !isMyTurn) return null;
+
+    const { card, targetItemId, dugTargetSeat } = inlineActionState;
+    const { captureOptions, buildOptions, canTrail, trailBlockedReason } = activeCardMoves;
+
+    if (targetItemId !== null) {
+      const captures = captureOptions.filter(
+        (opt) =>
+          opt.capturedItemIds.includes(targetItemId) ||
+          (dugTargetSeat !== null && opt.dugCapturedFromSeat === dugTargetSeat)
+      );
+      const builds = buildOptions.filter((opt) =>
+        opt.targetItemIds.includes(targetItemId)
+      );
+      return {
+        card,
+        captures,
+        builds,
+        digMerges: [] as TableDigMergeOption[],
+        showTrail: false,
+        trailBlockedReason: undefined as string | undefined,
+      };
+    }
+
+    if (dugTargetSeat !== null) {
+      const captures = captureOptions.filter(
+        (opt) => opt.dugCapturedFromSeat === dugTargetSeat
+      );
+      const builds = buildOptions.filter(
+        (opt) => opt.dugCapturedFromSeat === dugTargetSeat
+      );
+      const digMerges = tableDigMerges.filter(
+        (merge) => merge.dugFromSeat === dugTargetSeat
+      );
+      return {
+        card,
+        captures,
+        builds,
+        digMerges,
+        showTrail: false,
+        trailBlockedReason: undefined as string | undefined,
+      };
+    }
+
+    const captures = captureOptions.slice(0, 2);
+
+    const bestBuildByTarget = new Map<number, BuildOption>();
+    const scoreBuildOption = (opt: BuildOption) =>
+      (opt.dugCapturedFromSeat == null ? 4 : 0) +
+      (opt.resultingCemented && opt.targetValue === card.rank
+        ? 2
+        : opt.resultingCemented
+          ? 1
+          : 0);
+
+    for (const opt of buildOptions) {
+      const existing = bestBuildByTarget.get(opt.targetValue);
+      if (!existing || scoreBuildOption(opt) > scoreBuildOption(existing)) {
+        bestBuildByTarget.set(opt.targetValue, opt);
+      }
+    }
+    const builds = Array.from(bestBuildByTarget.values()).slice(0, 4);
+
+    return {
+      card,
+      captures,
+      builds,
+      digMerges: [] as TableDigMergeOption[],
+      showTrail: canTrail,
+      trailBlockedReason: !canTrail ? trailBlockedReason : undefined,
+    };
+  }, [inlineActionState, isMyTurn, activeCardMoves, tableDigMerges]);
 
   const getSeatShortName = useCallback(
     (seat: number): string => {
@@ -806,7 +1090,7 @@ export function App() {
         {/* Center Table Arena: Loose Cards & Build Stacks */}
         <section
           aria-label="Center table cards"
-          className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-2.5 pt-14 pb-32 md:px-24 md:pt-24 md:pb-44"
+          className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-2.5 pt-14 pb-36 md:px-24 md:pt-24 md:pb-44"
         >
           <div className="pointer-events-auto flex max-h-full max-w-5xl flex-wrap items-center justify-center gap-2 sm:gap-3.5">
             {viewerView.table.length === 0 ? (
@@ -886,7 +1170,7 @@ export function App() {
         </section>
 
         {/* Round 1 -> Round 2 Transition Banner (1v1) */}
-        {viewerView.phase === 'ROUND_TRANSITION' && (
+        {viewerView.phase === 'ROUND_TRANSITION' && pendingUndo === null && (
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/30 backdrop-blur-[1px]">
             <button
               type="button"
@@ -909,7 +1193,7 @@ export function App() {
         {/* South's Face-Up Captured Deck (Bottom-Right) */}
         <aside
           aria-label="Your captures"
-          className="pointer-events-none absolute bottom-2 right-2 z-20 flex flex-col items-center gap-1 md:bottom-4 md:right-4 md:gap-1.5"
+          className="pointer-events-none absolute bottom-32 right-2 z-20 flex flex-col items-center gap-1 md:bottom-4 md:right-4 md:gap-1.5"
         >
           <FaceUpCapturedDeck
             topCard={mySeat?.topCapturedCard ?? null}
@@ -923,8 +1207,145 @@ export function App() {
         </aside>
 
         {/* Bottom Player Hand Fan (Seat 0 - South) */}
-        <div className="pointer-events-auto absolute bottom-2.5 left-1/2 z-30 flex -translate-x-1/2 flex-col items-center">
-          {isMyTurn && tableDigMerges.length > 0 && (
+        <div className="pointer-events-auto absolute bottom-3.5 left-1/2 z-30 flex -translate-x-1/2 flex-col items-center md:bottom-3">
+          {/* 4-Second Cancel Timer Pill */}
+          {pendingUndo && (
+            <div
+              key={pendingUndo.expiresAt}
+              className="mb-1.5 flex w-max max-w-[94vw] items-center justify-center gap-1.5"
+            >
+              <button
+                type="button"
+                onClick={handleCancelPendingMove}
+                title={`Undo: ${pendingUndo.label}`}
+                className="relative inline-flex items-center gap-1.5 overflow-hidden rounded-full border border-amber-400/55 bg-gradient-to-r from-[#3a1a12]/95 to-[#2b170e]/95 px-3 py-1 text-[11px] font-semibold text-amber-100 shadow-[0_4px_16px_rgba(0,0,0,0.48)] backdrop-blur-md transition-all duration-150 hover:border-rose-400/75 hover:from-[#471e15] hover:to-[#331a10] active:scale-[0.97]"
+              >
+                <RotateCcw className="h-3 w-3 shrink-0 text-amber-300" />
+                <span>Cancel ({Math.max(1, undoRemainingSec)}s)</span>
+                <span className="animate-undo-bar pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-gradient-to-r from-amber-400 to-rose-400" />
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmPendingMove}
+                className="inline-flex items-center gap-1 rounded-full border border-emerald-400/45 bg-[#10261b]/95 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 shadow-[0_4px_14px_rgba(0,0,0,0.4)] backdrop-blur-md transition-all duration-150 hover:border-emerald-300/75 hover:bg-[#163425] active:scale-[0.97]"
+              >
+                <Check className="h-3 w-3 shrink-0 text-emerald-300" />
+                <span>Play Now</span>
+              </button>
+            </div>
+          )}
+
+          {/* Inline Non-Blocking Move Pill Buttons */}
+          {inlineActionData && (
+            <div className="mb-1.5 flex w-max max-w-[94vw] flex-wrap items-center justify-center gap-1.5 px-1 sm:max-w-xl">
+              {inlineActionData.captures.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => handleExecuteCapture(option)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/60 bg-[#0e2a1d]/95 px-2.5 py-1 text-[11px] font-semibold text-emerald-100 shadow-[0_4px_14px_rgba(16,185,129,0.22)] backdrop-blur-md transition-all duration-150 hover:border-emerald-300 hover:bg-[#133827] active:scale-[0.97]"
+                >
+                  <span className="truncate max-w-[180px] sm:max-w-[240px]">
+                    {option.description}
+                  </span>
+                  {option.isSweep && (
+                    <span className="rounded-full border border-emerald-300/60 bg-emerald-500/25 px-1.5 py-0.2 text-[9px] font-bold tracking-wider text-emerald-100 uppercase">
+                      SWEEP
+                    </span>
+                  )}
+                </button>
+              ))}
+
+              {inlineActionData.builds.map((option) => {
+                const { text, isKeep, isLocked } = getBuildPillLabel(
+                  option,
+                  inlineActionData.card.rank
+                );
+                const hasDuplicateLabel =
+                  inlineActionData.builds.filter(
+                    (b) =>
+                      getBuildPillLabel(b, inlineActionData.card.rank).text === text &&
+                      b.dugCapturedFromSeat === option.dugCapturedFromSeat
+                  ).length > 1;
+                const extraHint = hasDuplicateLabel
+                  ? ` (${option.targetItems
+                      .map((it) =>
+                        it.kind === 'loose' ? it.card.label : `B${it.targetValue}`
+                      )
+                      .join('+')})`
+                  : '';
+
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => handleExecuteBuild(option)}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold backdrop-blur-md transition-all duration-150 active:scale-[0.97] ${
+                      isKeep || isLocked
+                        ? 'border-amber-400/65 bg-[#312011]/95 text-amber-100 shadow-[0_4px_14px_rgba(245,158,11,0.22)] hover:border-amber-300 hover:bg-[#3f2916]'
+                        : 'border-[#c89d54]/55 bg-[#25180e]/95 text-[#f3dfb8] shadow-[0_4px_14px_rgba(200,157,84,0.18)] hover:border-[#dfc088] hover:bg-[#322114]'
+                    }`}
+                  >
+                    {isKeep && <Lock className="h-3 w-3 shrink-0 text-amber-300" />}
+                    <span>
+                      {text}
+                      {extraHint}
+                      {option.dugCapturedFromSeat !== null &&
+                      option.dugCapturedFromSeat !== undefined
+                        ? ' + Dig'
+                        : ''}
+                    </span>
+                  </button>
+                );
+              })}
+
+              {inlineActionData.digMerges.map((merge) => (
+                <button
+                  key={merge.id}
+                  type="button"
+                  onClick={() => handleExecuteTableDigMerge(merge)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/70 bg-[#2a1c11]/95 px-2.5 py-1 text-[11px] font-semibold text-amber-200 shadow-[0_4px_16px_rgba(245,158,11,0.28)] backdrop-blur-md transition-all duration-150 hover:border-amber-300 hover:bg-[#382516] active:scale-[0.97]"
+                >
+                  Dig {merge.description}
+                </button>
+              ))}
+
+              {inlineActionData.showTrail && (
+                <button
+                  type="button"
+                  onClick={handleExecuteTrail}
+                  className="inline-flex items-center gap-1 rounded-full border border-white/25 bg-[#1b140e]/90 px-2.5 py-1 text-[11px] font-semibold text-[#efe6d5] shadow-[0_4px_14px_rgba(0,0,0,0.35)] backdrop-blur-md transition-all duration-150 hover:border-[#c89d54]/60 hover:bg-[#2a1f16] active:scale-[0.97]"
+                >
+                  Place on Table
+                </button>
+              )}
+
+              {!inlineActionData.showTrail &&
+                inlineActionData.captures.length === 0 &&
+                inlineActionData.builds.length === 0 &&
+                inlineActionData.digMerges.length === 0 &&
+                inlineActionData.trailBlockedReason && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-950/85 px-2.5 py-1 text-[10px] font-medium text-amber-200 backdrop-blur-md">
+                    <Lock className="h-3 w-3 shrink-0 text-amber-400" />
+                    Keep for Build
+                  </span>
+                )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  setInlineActionState(null);
+                  setSelectedCardId(null);
+                }}
+                aria-label="Cancel card selection"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-white/20 bg-[#1c130d]/90 text-stone-300 shadow-sm backdrop-blur-md transition-colors hover:border-[#c89d54]/50 hover:bg-[#2a1d14] hover:text-white active:scale-[0.95]"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          )}
+
+          {!inlineActionData && isMyTurn && tableDigMerges.length > 0 && (
             <div className="mb-1.5 flex flex-wrap items-center justify-center gap-1.5">
               {tableDigMerges.map((merge) => (
                 <button
@@ -984,39 +1405,18 @@ export function App() {
         </div>
       )}
 
-      {/* Move Action Picker Modal */}
-      {pickerState && isMyTurn && (
-        <ActionPickerModal
-          card={pickerState.card}
-          captureOptions={activeCardMoves.captureOptions}
-          buildOptions={activeCardMoves.buildOptions}
-          tableDigMerges={tableDigMerges}
-          players={viewerView.players}
-          canTrail={activeCardMoves.canTrail}
-          trailBlockedReason={activeCardMoves.trailBlockedReason}
-          droppedTargetId={pickerState.droppedTargetId}
-          dugTargetSeat={pickerState.dugTargetSeat ?? null}
-          onExecuteCapture={handleExecuteCapture}
-          onExecuteBuild={handleExecuteBuild}
-          onExecuteTableDigMerge={handleExecuteTableDigMerge}
-          onExecuteTrail={handleExecuteTrail}
-          onClose={() => {
-            setPickerState(null);
-            setSelectedCardId(null);
-          }}
-        />
-      )}
-
       {/* End-of-Deal Score Breakdown Modal */}
-      {viewerView.phase === 'DEAL_OVER' && viewerView.dealScoreBreakdown && (
-        <ScoreBreakdownModal
-          breakdown={viewerView.dealScoreBreakdown}
-          matchScores={viewerView.matchScores}
-          sweepsEnabled={viewerView.houseRules.sweepsEnabled}
-          mode={viewerView.mode}
-          onDealNextHand={handleDealNextHand}
-        />
-      )}
+      {viewerView.phase === 'DEAL_OVER' &&
+        viewerView.dealScoreBreakdown &&
+        pendingUndo === null && (
+          <ScoreBreakdownModal
+            breakdown={viewerView.dealScoreBreakdown}
+            matchScores={viewerView.matchScores}
+            sweepsEnabled={viewerView.houseRules.sweepsEnabled}
+            mode={viewerView.mode}
+            onDealNextHand={handleDealNextHand}
+          />
+        )}
 
       {/* House Rules Reference Slide-Over Drawer */}
       <RulesDrawer

@@ -153,7 +153,7 @@ export function PlayerHandFan({
 
       {/* Parabolic Curved Fan */}
       <div
-        className="relative flex h-32 items-end justify-center pb-2 md:h-44 md:pb-3.5"
+        className="relative flex h-36 items-end justify-center pb-5 md:h-44 md:pb-4"
         style={{ width: `${containerWidth}px` }}
       >
         {hand.map((card, index) => {
@@ -163,7 +163,7 @@ export function PlayerHandFan({
           const angleDeg = norm * maxArcDeg;
           const translateX = offset * cardSpreadPx;
           // Parabolic arc: center sits higher, edges drop smoothly
-          const arcDropY = norm * norm * (isMobile ? 6 : 10);
+          const arcDropY = norm * norm * (isMobile ? 3.5 : 9);
 
           const isSelected = selectedCardId === card.id;
           const isHovered = hoveredCardId === card.id;
@@ -209,7 +209,7 @@ export function PlayerHandFan({
               onPointerLeave={() =>
                 setHoveredCardId((prev) => (prev === card.id ? null : prev))
               }
-              className={`absolute bottom-2 rounded-xl touch-none transition-[transform,opacity] duration-150 ease-out focus-visible:outline-2 focus-visible:outline-amber-400/80 md:bottom-3.5 ${
+              className={`absolute bottom-4 rounded-xl touch-none transition-[transform,opacity] duration-150 ease-out focus-visible:outline-2 focus-visible:outline-amber-400/80 md:bottom-4 ${
                 isMyTurn ? 'cursor-grab active:cursor-grabbing' : 'cursor-default opacity-80'
               } ${isDragging ? 'opacity-25' : 'opacity-100'}`}
               style={{
