@@ -389,13 +389,13 @@ function ActionCalloutPill({
 }) {
   return (
     <div
-      className={`max-w-[230px] truncate rounded-full border px-2.5 py-0.5 text-[10px] font-medium tracking-wide backdrop-blur-sm transition-opacity duration-200 ${
+      className={`max-w-[215px] sm:max-w-[280px] truncate rounded-full border px-2.5 py-0.5 text-[10px] font-medium tracking-wide backdrop-blur-sm transition-opacity duration-200 ${
         swept
           ? 'border-emerald-400/50 bg-emerald-950/90 text-emerald-200 shadow-[0_0_12px_rgba(16,185,129,0.25)]'
           : 'border-[#c89d54]/30 bg-[#1a120c]/90 text-[#e7d6b8]'
       } ${className}`}
     >
-      {swept ? `SWEEP! ${text}` : text}
+      {swept && !/sweep/i.test(text) ? `SWEEP! ${text}` : text}
     </div>
   );
 }

@@ -65,7 +65,7 @@ export function PlayerHandFan({
   const cardSpreadPx = isMobile
     ? Math.max(
         16,
-        Math.min(32, Math.floor((viewportWidth - 116) / Math.max(1, count - 1)))
+        Math.min(32, Math.floor((viewportWidth - 134) / Math.max(1, count - 1)))
       )
     : Math.min(
         desktopBaseSpread,

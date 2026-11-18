@@ -87,6 +87,15 @@ interface StagedDragSession {
 interface AnchorCoords {
   x: number;
   y: number;
+  placeBelow: boolean;
+}
+
+interface AnchoredPillGroup {
+  key: string;
+  selector: string;
+  captures: CaptureOption[];
+  builds: BuildOption[];
+  digMerges: TableDigMergeOption[];
 }
 
 interface TableComboActionState {
@@ -265,6 +274,48 @@ function formatCaptureTargetSummary(option: CaptureOption): string {
   return parts.join('+');
 }
 
+function formatCompactCaptureLabel(
+  option: CaptureOption,
+  primaryTargetId?: string
+): string {
+  const digSuffix = option.dugCapturedFromSeat != null ? ' + Dig' : '';
+  if (primaryTargetId) {
+    const otherItems = option.capturedItems.filter((it) => it.id !== primaryTargetId);
+    if (otherItems.length > 0) {
+      const otherSummary = otherItems
+        .map((it) =>
+          it.kind === 'loose' ? it.card.label : `B${formatBuildRank(it.targetValue)}`
+        )
+        .join('+');
+      return `Capture w/ ${otherSummary}${digSuffix}`;
+    }
+    return `Capture${digSuffix}`;
+  }
+  if (option.capturedItems.length > 0) {
+    return `Capture w/ ${formatCaptureTargetSummary(option)}`;
+  }
+  return 'Capture';
+}
+
+function areAnchorMapsEqual(
+  a: ReadonlyMap<string, AnchorCoords>,
+  b: ReadonlyMap<string, AnchorCoords>
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [key, valA] of a) {
+    const valB = b.get(key);
+    if (
+      !valB ||
+      valA.x !== valB.x ||
+      valA.y !== valB.y ||
+      valA.placeBelow !== valB.placeBelow
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function App() {
   const [gameState, setGameState] = useState<SACasinoState>(() =>
     createInitialSACasinoState({
@@ -299,8 +350,9 @@ export function App() {
   const [stagedDragState, setStagedDragState] = useState<StagedDragSession | null>(null);
   const [tableComboState, setTableComboState] = useState<TableComboActionState | null>(null);
   const [dugFocusTargetId, setDugFocusTargetId] = useState<string | null>(null);
-  const [anchorCoords, setAnchorCoords] = useState<AnchorCoords | null>(null);
-  const [anchorPlaceBelow, setAnchorPlaceBelow] = useState(false);
+  const [anchorCoordsMap, setAnchorCoordsMap] = useState<Map<string, AnchorCoords>>(
+    () => new Map()
+  );
   const [hoveredDropTargetId, setHoveredDropTargetId] = useState<string | null>(null);
   const [inlineActionState, setInlineActionState] = useState<InlineActionState | null>(null);
   const [pendingUndo, setPendingUndo] = useState<PendingUndoState | null>(null);
@@ -2152,29 +2204,126 @@ export function App() {
     isFinalDealCard,
   ]);
 
-  // Determine which selector (if any) currently owns the anchored floating pills
-  const anchorSelector = useMemo(() => {
-    if (!isMyTurn) return null;
+  const isMultiTargetInline = Boolean(
+    isMyTurn &&
+      !activeDugBarData &&
+      !tableComboState &&
+      !stagedGroupActionData &&
+      inlineActionData &&
+      inlineActionState &&
+      inlineActionState.targetItemId === null &&
+      inlineActionState.dugTargetSeat === null
+  );
+
+  // Determine all active target selectors (and grouped per-target options) for anchored pills
+  const anchoredGroups = useMemo<AnchoredPillGroup[]>(() => {
+    if (!isMyTurn) return [];
     if (activeDugBarData) {
-      return activeDugBarData.targetItemId
-        ? `[data-table-item-id="${activeDugBarData.targetItemId}"]`
-        : null;
+      if (!activeDugBarData.targetItemId) return [];
+      return [
+        {
+          key: `active-dug:${activeDugBarData.targetItemId}`,
+          selector: `[data-table-item-id="${activeDugBarData.targetItemId}"]`,
+          captures: [],
+          builds: [],
+          digMerges: [],
+        },
+      ];
     }
     if (tableComboState) {
-      return `[data-table-item-id="${tableComboState.targetItemId}"]`;
+      return [
+        {
+          key: `table-combo:${tableComboState.targetItemId}`,
+          selector: `[data-table-item-id="${tableComboState.targetItemId}"]`,
+          captures: [],
+          builds: [],
+          digMerges: [],
+        },
+      ];
     }
     if (stagedGroupActionData) {
-      return `[data-table-item-id="${stagedGroupActionData.anchorId}"]`;
+      return [
+        {
+          key: `staged-group:${stagedGroupActionData.anchorId}`,
+          selector: `[data-table-item-id="${stagedGroupActionData.anchorId}"]`,
+          captures: [],
+          builds: [],
+          digMerges: [],
+        },
+      ];
     }
     if (inlineActionData && inlineActionState) {
       if (inlineActionState.targetItemId !== null) {
-        return `[data-table-item-id="${inlineActionState.targetItemId}"]`;
+        return [
+          {
+            key: `inline-target:${inlineActionState.targetItemId}`,
+            selector: `[data-table-item-id="${inlineActionState.targetItemId}"]`,
+            captures: inlineActionData.captures,
+            builds: inlineActionData.builds,
+            digMerges: inlineActionData.digMerges,
+          },
+        ];
       }
       if (inlineActionState.dugTargetSeat !== null) {
-        return `[data-captured-seat="${inlineActionState.dugTargetSeat}"]`;
+        return [
+          {
+            key: `inline-dig:${inlineActionState.dugTargetSeat}`,
+            selector: `[data-captured-seat="${inlineActionState.dugTargetSeat}"]`,
+            captures: inlineActionData.captures,
+            builds: inlineActionData.builds,
+            digMerges: inlineActionData.digMerges,
+          },
+        ];
       }
+
+      const groupsBySelector = new Map<string, AnchoredPillGroup>();
+      const getOrCreateGroup = (selector: string): AnchoredPillGroup => {
+        let group = groupsBySelector.get(selector);
+        if (!group) {
+          group = {
+            key: selector,
+            selector,
+            captures: [],
+            builds: [],
+            digMerges: [],
+          };
+          groupsBySelector.set(selector, group);
+        }
+        return group;
+      };
+
+      for (const option of inlineActionData.captures) {
+        const primaryId = option.capturedItemIds[0];
+        if (primaryId) {
+          getOrCreateGroup(`[data-table-item-id="${primaryId}"]`).captures.push(option);
+        } else if (option.dugCapturedFromSeat != null) {
+          getOrCreateGroup(
+            `[data-captured-seat="${option.dugCapturedFromSeat}"]`
+          ).captures.push(option);
+        }
+      }
+
+      for (const option of inlineActionData.builds) {
+        const primaryId = option.targetItemIds[0];
+        if (primaryId) {
+          getOrCreateGroup(`[data-table-item-id="${primaryId}"]`).builds.push(option);
+        } else if (option.dugCapturedFromSeat != null) {
+          getOrCreateGroup(
+            `[data-captured-seat="${option.dugCapturedFromSeat}"]`
+          ).builds.push(option);
+        }
+      }
+
+      for (const merge of inlineActionData.digMerges) {
+        const primaryId = merge.buildId || merge.targetItemIds[0];
+        if (primaryId) {
+          getOrCreateGroup(`[data-table-item-id="${primaryId}"]`).digMerges.push(merge);
+        }
+      }
+
+      return Array.from(groupsBySelector.values());
     }
-    return null;
+    return [];
   }, [
     isMyTurn,
     activeDugBarData,
@@ -2184,53 +2333,55 @@ export function App() {
     inlineActionState,
   ]);
 
-  // Measure target element relative to <main> and clamp within safe bounds
+  // Measure all active target elements relative to <main> and clamp within safe bounds
   useLayoutEffect(() => {
     const mainEl = mainRef.current;
-    if (!mainEl || !anchorSelector) {
-      setAnchorCoords(null);
+    if (!mainEl || anchoredGroups.length === 0) {
+      setAnchorCoordsMap((prev) => (prev.size === 0 ? prev : new Map()));
       return;
     }
 
     const measure = () => {
       const mainRect = mainEl.getBoundingClientRect();
       if (mainRect.width <= 0 || mainRect.height <= 0) {
-        setAnchorCoords(null);
+        setAnchorCoordsMap((prev) => (prev.size === 0 ? prev : new Map()));
         return;
       }
 
-      const candidates = mainEl.querySelectorAll(anchorSelector);
-      let targetRect: DOMRect | null = null;
-      for (const el of candidates) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          targetRect = rect;
-          break;
-        }
-      }
-
-      if (!targetRect) {
-        setAnchorCoords(null);
-        return;
-      }
-
-      const rawX = targetRect.left - mainRect.left + targetRect.width * 0.5;
-      const topRel = targetRect.top - mainRect.top;
-      const placeBelow = topRel < 64;
-      const rawY = placeBelow
-        ? targetRect.bottom - mainRect.top + 8
-        : topRel - 10;
-
+      const nextMap = new Map<string, AnchorCoords>();
       const minX = Math.min(96, mainRect.width * 0.5);
       const maxX = Math.max(minX, mainRect.width - 96);
       const minY = 48;
       const maxY = Math.max(minY, mainRect.height - 150);
 
-      setAnchorPlaceBelow(placeBelow);
-      setAnchorCoords({
-        x: Math.max(minX, Math.min(maxX, rawX)),
-        y: Math.max(minY, Math.min(maxY, rawY)),
-      });
+      for (const group of anchoredGroups) {
+        const candidates = mainEl.querySelectorAll(group.selector);
+        let targetRect: DOMRect | null = null;
+        for (const el of candidates) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            targetRect = rect;
+            break;
+          }
+        }
+
+        if (!targetRect) continue;
+
+        const rawX = targetRect.left - mainRect.left + targetRect.width * 0.5;
+        const topRel = targetRect.top - mainRect.top;
+        const placeBelow = topRel < 64;
+        const rawY = placeBelow
+          ? targetRect.bottom - mainRect.top + 8
+          : topRel - 10;
+
+        nextMap.set(group.key, {
+          x: Math.max(minX, Math.min(maxX, rawX)),
+          y: Math.max(minY, Math.min(maxY, rawY)),
+          placeBelow,
+        });
+      }
+
+      setAnchorCoordsMap((prev) => (areAnchorMapsEqual(prev, nextMap) ? prev : nextMap));
     };
 
     measure();
@@ -2249,7 +2400,34 @@ export function App() {
         resizeObserver.disconnect();
       }
     };
-  }, [anchorSelector, viewerView.table, viewerView.players, stagedTableGroup, isMobile]);
+  }, [anchoredGroups, viewerView.table, viewerView.players, stagedTableGroup, isMobile]);
+
+  const fallbackInlineOptions = useMemo(() => {
+    if (!isMultiTargetInline || !inlineActionData) {
+      return {
+        captures: [] as CaptureOption[],
+        builds: [] as BuildOption[],
+        digMerges: [] as TableDigMergeOption[],
+      };
+    }
+
+    const anchoredCaptureIds = new Set<string>();
+    const anchoredBuildIds = new Set<string>();
+    const anchoredDigIds = new Set<string>();
+
+    for (const group of anchoredGroups) {
+      if (!anchorCoordsMap.has(group.key)) continue;
+      for (const opt of group.captures) anchoredCaptureIds.add(opt.id);
+      for (const opt of group.builds) anchoredBuildIds.add(opt.id);
+      for (const merge of group.digMerges) anchoredDigIds.add(merge.id);
+    }
+
+    return {
+      captures: inlineActionData.captures.filter((opt) => !anchoredCaptureIds.has(opt.id)),
+      builds: inlineActionData.builds.filter((opt) => !anchoredBuildIds.has(opt.id)),
+      digMerges: inlineActionData.digMerges.filter((merge) => !anchoredDigIds.has(merge.id)),
+    };
+  }, [isMultiTargetInline, inlineActionData, anchoredGroups, anchorCoordsMap]);
 
   const getSeatShortName = useCallback(
     (seat: number): string => {
@@ -2279,7 +2457,120 @@ export function App() {
   const jitterScale = tableCount >= 5 ? 0.5 : 1;
 
   const activeTetherDrag = dragState ?? tableDragState ?? stagedDragState ?? digDragState;
-  const isAnchoredBarVisible = Boolean(anchorSelector && anchorCoords);
+  const singleAnchoredCoords =
+    !isMultiTargetInline && anchoredGroups.length === 1
+      ? anchorCoordsMap.get(anchoredGroups[0].key) ?? null
+      : null;
+
+  const renderInlineOptionButtons = (
+    card: Card,
+    captures: readonly CaptureOption[],
+    builds: readonly BuildOption[],
+    digMerges: readonly TableDigMergeOption[],
+    options: { compact: boolean; primaryTargetId?: string }
+  ) => (
+    <>
+      {captures.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          title={option.description}
+          onClick={() => handleExecuteCapture(card, option)}
+          className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/60 bg-[#0e2a1d]/95 px-2.5 py-1 text-[11px] font-semibold text-emerald-100 shadow-[0_4px_14px_rgba(16,185,129,0.22)] backdrop-blur-md transition-all duration-150 hover:border-emerald-300 hover:bg-[#133827] active:scale-[0.97]"
+        >
+          <span
+            className={`truncate ${
+              options.compact
+                ? 'max-w-[160px] sm:max-w-[200px]'
+                : 'max-w-[180px] sm:max-w-[240px]'
+            }`}
+          >
+            {options.compact
+              ? formatCompactCaptureLabel(option, options.primaryTargetId)
+              : option.description}
+          </span>
+          {option.isSweep && (
+            <span className="rounded-full border border-emerald-300/60 bg-emerald-500/25 px-1.5 py-0.2 text-[9px] font-bold tracking-wider text-emerald-100 uppercase">
+              SWEEP
+            </span>
+          )}
+        </button>
+      ))}
+
+      {builds.map((option) => {
+        const { text, isKeep, isLocked } = getBuildPillLabel(option, card.rank);
+        const hasDuplicateLabel =
+          builds.filter(
+            (b) =>
+              getBuildPillLabel(b, card.rank).text === text &&
+              b.dugCapturedFromSeat === option.dugCapturedFromSeat
+          ).length > 1;
+        const extraHint = hasDuplicateLabel
+          ? ` (${option.targetItems
+              .map((it) =>
+                it.kind === 'loose' ? it.card.label : `B${it.targetValue}`
+              )
+              .join('+')})`
+          : '';
+
+        return (
+          <button
+            key={option.id}
+            type="button"
+            title={option.description}
+            onClick={() => handleExecuteBuild(card, option)}
+            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold backdrop-blur-md transition-all duration-150 active:scale-[0.97] ${
+              isKeep || isLocked
+                ? 'border-amber-400/65 bg-[#312011]/95 text-amber-100 shadow-[0_4px_14px_rgba(245,158,11,0.22)] hover:border-amber-300 hover:bg-[#3f2916]'
+                : 'border-[#c89d54]/55 bg-[#25180e]/95 text-[#f3dfb8] shadow-[0_4px_14px_rgba(200,157,84,0.18)] hover:border-[#dfc088] hover:bg-[#322114]'
+            }`}
+          >
+            {isKeep && <Lock className="h-3 w-3 shrink-0 text-amber-300" />}
+            <span>
+              {text}
+              {extraHint}
+              {option.dugCapturedFromSeat !== null &&
+              option.dugCapturedFromSeat !== undefined
+                ? ' + Dig'
+                : ''}
+            </span>
+          </button>
+        );
+      })}
+
+      {digMerges.map((merge) => (
+        <button
+          key={merge.id}
+          type="button"
+          title={merge.description}
+          onClick={() => handleExecuteTableDigMerge(merge)}
+          className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/70 bg-[#2a1c11]/95 px-2.5 py-1 text-[11px] font-semibold text-amber-200 shadow-[0_4px_16px_rgba(245,158,11,0.28)] backdrop-blur-md transition-all duration-150 hover:border-amber-300 hover:bg-[#382516] active:scale-[0.97]"
+        >
+          {options.compact
+            ? `Dig ${merge.dugCard.label} + ${merge.targetItems.map((i) => i.card.label).join('+')}`
+            : `Dig ${merge.description}`}
+        </button>
+      ))}
+    </>
+  );
+
+  const renderAnchoredInlineGroupPills = (group: AnchoredPillGroup) => {
+    if (!inlineActionData) return null;
+    const tableItemMatch = group.selector.match(/^\[data-table-item-id="(.+)"\]$/);
+    const primaryTargetId = tableItemMatch ? tableItemMatch[1] : undefined;
+
+    return (
+      <div className="flex w-max max-w-[min(92vw,280px)] flex-wrap items-center justify-center gap-1">
+        {renderInlineOptionButtons(
+          inlineActionData.card,
+          group.captures,
+          group.builds,
+          group.digMerges,
+          { compact: true, primaryTargetId }
+        )}
+      </div>
+    );
+  };
 
   const renderFloatingActionPills = (anchored: boolean) => {
     const containerClass = anchored
@@ -2492,79 +2783,25 @@ export function App() {
 
     // 4. Standard Inline Hand / Deck Actions
     if (inlineActionData) {
+      const capturesToRender = isMultiTargetInline
+        ? fallbackInlineOptions.captures
+        : inlineActionData.captures;
+      const buildsToRender = isMultiTargetInline
+        ? fallbackInlineOptions.builds
+        : inlineActionData.builds;
+      const digMergesToRender = isMultiTargetInline
+        ? fallbackInlineOptions.digMerges
+        : inlineActionData.digMerges;
+
       return (
         <div className={containerClass}>
-          {inlineActionData.captures.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => handleExecuteCapture(inlineActionData.card, option)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/60 bg-[#0e2a1d]/95 px-2.5 py-1 text-[11px] font-semibold text-emerald-100 shadow-[0_4px_14px_rgba(16,185,129,0.22)] backdrop-blur-md transition-all duration-150 hover:border-emerald-300 hover:bg-[#133827] active:scale-[0.97]"
-            >
-              <span className="truncate max-w-[180px] sm:max-w-[240px]">
-                {option.description}
-              </span>
-              {option.isSweep && (
-                <span className="rounded-full border border-emerald-300/60 bg-emerald-500/25 px-1.5 py-0.2 text-[9px] font-bold tracking-wider text-emerald-100 uppercase">
-                  SWEEP
-                </span>
-              )}
-            </button>
-          ))}
-
-          {inlineActionData.builds.map((option) => {
-            const { text, isKeep, isLocked } = getBuildPillLabel(
-              option,
-              inlineActionData.card.rank
-            );
-            const hasDuplicateLabel =
-              inlineActionData.builds.filter(
-                (b) =>
-                  getBuildPillLabel(b, inlineActionData.card.rank).text === text &&
-                  b.dugCapturedFromSeat === option.dugCapturedFromSeat
-              ).length > 1;
-            const extraHint = hasDuplicateLabel
-              ? ` (${option.targetItems
-                  .map((it) =>
-                    it.kind === 'loose' ? it.card.label : `B${it.targetValue}`
-                  )
-                  .join('+')})`
-              : '';
-
-            return (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => handleExecuteBuild(inlineActionData.card, option)}
-                className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold backdrop-blur-md transition-all duration-150 active:scale-[0.97] ${
-                  isKeep || isLocked
-                    ? 'border-amber-400/65 bg-[#312011]/95 text-amber-100 shadow-[0_4px_14px_rgba(245,158,11,0.22)] hover:border-amber-300 hover:bg-[#3f2916]'
-                    : 'border-[#c89d54]/55 bg-[#25180e]/95 text-[#f3dfb8] shadow-[0_4px_14px_rgba(200,157,84,0.18)] hover:border-[#dfc088] hover:bg-[#322114]'
-                }`}
-              >
-                {isKeep && <Lock className="h-3 w-3 shrink-0 text-amber-300" />}
-                <span>
-                  {text}
-                  {extraHint}
-                  {option.dugCapturedFromSeat !== null &&
-                  option.dugCapturedFromSeat !== undefined
-                    ? ' + Dig'
-                    : ''}
-                </span>
-              </button>
-            );
-          })}
-
-          {inlineActionData.digMerges.map((merge) => (
-            <button
-              key={merge.id}
-              type="button"
-              onClick={() => handleExecuteTableDigMerge(merge)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/70 bg-[#2a1c11]/95 px-2.5 py-1 text-[11px] font-semibold text-amber-200 shadow-[0_4px_16px_rgba(245,158,11,0.28)] backdrop-blur-md transition-all duration-150 hover:border-amber-300 hover:bg-[#382516] active:scale-[0.97]"
-            >
-              Dig {merge.description}
-            </button>
-          ))}
+          {renderInlineOptionButtons(
+            inlineActionData.card,
+            capturesToRender,
+            buildsToRender,
+            digMergesToRender,
+            { compact: false }
+          )}
 
           {inlineActionData.showTrail && (
             <button
@@ -2872,18 +3109,40 @@ export function App() {
         </section>
 
         {/* Anchored Floating Action Buttons Right On/Next to Target Card, Build, or Deck */}
-        {isAnchoredBarVisible && anchorCoords && (
-          <div
-            className="pointer-events-auto absolute z-40"
-            style={{
-              left: anchorCoords.x,
-              top: anchorCoords.y,
-              transform: anchorPlaceBelow ? 'translate(-50%, 0)' : 'translate(-50%, -100%)',
-            }}
-          >
-            {renderFloatingActionPills(true)}
-          </div>
-        )}
+        {isMultiTargetInline
+          ? anchoredGroups.map((group) => {
+              const coords = anchorCoordsMap.get(group.key);
+              if (!coords) return null;
+              return (
+                <div
+                  key={group.key}
+                  className="pointer-events-auto absolute z-40"
+                  style={{
+                    left: coords.x,
+                    top: coords.y,
+                    transform: coords.placeBelow
+                      ? 'translate(-50%, 0)'
+                      : 'translate(-50%, -100%)',
+                  }}
+                >
+                  {renderAnchoredInlineGroupPills(group)}
+                </div>
+              );
+            })
+          : singleAnchoredCoords && (
+              <div
+                className="pointer-events-auto absolute z-40"
+                style={{
+                  left: singleAnchoredCoords.x,
+                  top: singleAnchoredCoords.y,
+                  transform: singleAnchoredCoords.placeBelow
+                    ? 'translate(-50%, 0)'
+                    : 'translate(-50%, -100%)',
+                }}
+              >
+                {renderFloatingActionPills(true)}
+              </div>
+            )}
 
         {/* Round 1 -> Round 2 Transition Banner (1v1) */}
         {viewerView.phase === 'ROUND_TRANSITION' && pendingUndo === null && (
@@ -2909,7 +3168,7 @@ export function App() {
         {/* South's Face-Up Captured Deck (Bottom-Right) */}
         <aside
           aria-label="Your captures"
-          className="pointer-events-none absolute bottom-32 right-2 z-20 flex flex-col items-center gap-1 md:bottom-4 md:right-4 md:gap-1.5"
+          className="pointer-events-none absolute bottom-[152px] right-2 z-20 flex flex-col items-center gap-1 md:bottom-4 md:right-4 md:gap-1.5"
         >
           <FaceUpCapturedDeck
             topCard={mySeat?.topCapturedCard ?? null}
@@ -2952,7 +3211,8 @@ export function App() {
           )}
 
           {/* Non-Anchored Move Pill Buttons Above Hand Fan */}
-          {!anchorSelector && renderFloatingActionPills(false)}
+          {(isMultiTargetInline || !singleAnchoredCoords) &&
+            renderFloatingActionPills(false)}
 
           {!inlineActionData &&
             !activeDugBarData &&
