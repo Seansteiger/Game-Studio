@@ -1048,7 +1048,7 @@ export function App() {
   const jitterScale = tableCount >= 5 ? 0.5 : 1;
 
   return (
-    <div className="relative flex h-screen w-screen flex-col overflow-hidden bg-[#081510] text-[#f4efe6]">
+    <div className="relative flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#081510] text-[#f4efe6]">
       {/* Top Walnut & Brass Studio Header */}
       <TopHudBar
         view={viewerView}
@@ -1141,6 +1141,7 @@ export function App() {
                       isOwnedByViewer={isOwnedByViewer}
                       isOwnedByPartner={isOwnedByPartner}
                       isTargeted={isTargeted}
+                      hasSelectedHandCard={Boolean(selectedCardId)}
                       highlightMode={highlightMode}
                       compact={compactBuilds}
                       onSelectBuild={() => handleSelectTableItem(item)}
@@ -1223,7 +1224,7 @@ export function App() {
         </aside>
 
         {/* Bottom Player Hand Fan (Seat 0 - South) */}
-        <div className="pointer-events-auto absolute bottom-3.5 left-1/2 z-30 flex -translate-x-1/2 flex-col items-center md:bottom-3">
+        <div className="pointer-events-auto absolute bottom-5 left-1/2 z-30 flex -translate-x-1/2 flex-col items-center md:bottom-3">
           {/* 4-Second Cancel Timer Pill */}
           {pendingUndo && (
             <div

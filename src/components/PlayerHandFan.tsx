@@ -153,7 +153,7 @@ export function PlayerHandFan({
 
       {/* Parabolic Curved Fan */}
       <div
-        className="relative flex h-36 items-end justify-center pb-5 md:h-44 md:pb-4"
+        className="relative flex h-32 items-end justify-center pb-3 md:h-44 md:pb-4"
         style={{ width: `${containerWidth}px` }}
       >
         {hand.map((card, index) => {
@@ -163,7 +163,7 @@ export function PlayerHandFan({
           const angleDeg = norm * maxArcDeg;
           const translateX = offset * cardSpreadPx;
           // Parabolic arc: center sits higher, edges drop smoothly
-          const arcDropY = norm * norm * (isMobile ? 3.5 : 9);
+          const arcDropY = norm * norm * (isMobile ? 2.5 : 9);
 
           const isSelected = selectedCardId === card.id;
           const isHovered = hoveredCardId === card.id;

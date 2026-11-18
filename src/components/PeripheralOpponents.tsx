@@ -602,10 +602,10 @@ function MobileOpponentSeat({
     visibleCount > 0 ? Math.max(cardW, (visibleCount - 1) * stepPx + cardW) : cardW;
 
   return (
-    <div className="flex min-w-0 flex-col items-center gap-0.5">
+    <div className="flex min-w-0 flex-col items-center gap-1.5">
       {/* Compact Seat Name Pill */}
       <div
-        className={`flex max-w-[140px] items-center gap-1 rounded-full border px-2 py-0.5 backdrop-blur-md transition-[border-color,box-shadow,background-color] duration-200 ${
+        className={`relative z-20 flex shrink-0 max-w-[140px] items-center gap-1 rounded-full border px-2 py-0.5 backdrop-blur-md transition-[border-color,box-shadow,background-color] duration-200 ${
           isActive
             ? 'border-amber-400/85 bg-[#23180f]/95 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
             : info.isPartner
@@ -632,7 +632,7 @@ function MobileOpponentSeat({
 
       {/* Upper Table Edge: Mini Face-Down Card Fan + Compact Face-Up Captured Deck */}
       <div
-        className={`flex items-center justify-center ${
+        className={`mt-1 flex items-center justify-center ${
           seatCount >= 3 ? 'gap-1' : 'gap-2'
         }`}
       >
@@ -738,7 +738,7 @@ export function PeripheralOpponents({
   return (
     <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
       {/* Mobile Upper Table Edge Opponents (< 768px) */}
-      <div className="md:hidden absolute top-1.5 inset-x-1.5 flex max-h-[96px] flex-col items-center gap-0.5">
+      <div className="md:hidden absolute top-1.5 inset-x-1.5 flex flex-col items-center gap-1">
         <div
           className={`flex w-full items-start ${
             mobileSeats.length === 1
