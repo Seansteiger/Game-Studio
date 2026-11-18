@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { BookOpen, Layers, Lock, Shield, Trophy, X } from 'lucide-react';
+import { BookOpen, Eye, Layers, Lock, Shield, Timer, Trophy, X } from 'lucide-react';
 
 export interface RulesDrawerProps {
   isOpen: boolean;
@@ -60,7 +60,7 @@ export function RulesDrawer({ isOpen, sweepsEnabled, onClose }: RulesDrawerProps
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="SA Casino Tabletop Rules"
+      aria-label="SA Casino Player Manual"
     >
       <aside
         className="animate-modal-enter relative flex h-full w-full max-w-md flex-col border-l border-[#c89d54]/45 bg-gradient-to-b from-[#25170f] via-[#18100a] to-[#100a06] shadow-[-24px_0_64px_rgba(0,0,0,0.85)]"
@@ -74,10 +74,10 @@ export function RulesDrawer({ isOpen, sweepsEnabled, onClose }: RulesDrawerProps
             </div>
             <div>
               <p className="text-[10px] font-semibold tracking-[0.18em] text-[#c89d54] uppercase">
-                House Reference
+                Player Manual
               </p>
               <h2 className="font-display text-base font-bold text-[#f6efe2] [text-wrap:balance]">
-                South African Casino Rules
+                SA Casino Guide
               </h2>
             </div>
           </div>
@@ -86,7 +86,7 @@ export function RulesDrawer({ isOpen, sweepsEnabled, onClose }: RulesDrawerProps
             type="button"
             onClick={onClose}
             className="rounded-lg border border-white/10 bg-white/5 p-1.5 text-stone-300 transition-colors hover:border-[#c89d54]/45 hover:bg-white/10 hover:text-white active:scale-[0.96]"
-            aria-label="Close rules guide"
+            aria-label="Close manual"
           >
             <X className="h-4 w-4" />
           </button>
@@ -205,7 +205,40 @@ export function RulesDrawer({ isOpen, sweepsEnabled, onClose }: RulesDrawerProps
             </div>
           </section>
 
-          {/* 4. Scoring Table */}
+          {/* 4. Tabletop Controls & Special Moves */}
+          <section className="rounded-xl border border-[#c89d54]/25 bg-black/25 p-3.5">
+            <div className="mb-2 flex items-center gap-2">
+              <Eye className="h-3.5 w-3.5 text-[#e6c588]" />
+              <h3 className="font-display text-xs font-bold tracking-wider text-[#f3dfb7] uppercase [text-wrap:balance]">
+                Tabletop Controls &amp; Special Moves
+              </h3>
+            </div>
+            <div className="space-y-2.5 text-[11.5px] text-stone-300/90">
+              <p className="[text-wrap:pretty]">
+                <strong className="text-[#f4efe6]">Peeking Builds:</strong> Tap the{' '}
+                <span className="font-semibold text-[#f3dfb7]">eye icon</span> on any build stack
+                to fan out and see all cards underneath. Locked builds show a{' '}
+                <span className="font-semibold text-amber-200">lock icon</span> next to their
+                number.
+              </p>
+              <p className="[text-wrap:pretty]">
+                <strong className="text-emerald-200">Digging Opponent&apos;s Captured Deck:</strong>{' '}
+                Only the top-most face-up captured card of each opponent&apos;s pile is visible.
+                When legal, you can capture that exposed top card directly or dig it onto a matching
+                table number or your own active build.
+              </p>
+              <p className="flex items-start gap-1.5 [text-wrap:pretty]">
+                <Timer className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#c89d54]" />
+                <span>
+                  <strong className="text-[#f4efe6]">4-Second Cancel Timer:</strong> After playing a
+                  move, you have <span className="font-mono-num font-semibold text-white">4</span>{' '}
+                  seconds to cancel and undo it before the next player acts.
+                </span>
+              </p>
+            </div>
+          </section>
+
+          {/* 5. Scoring Table */}
           <section className="rounded-xl border border-[#c89d54]/20 bg-black/30 p-3.5">
             <div className="mb-2.5 flex items-center justify-between">
               <div className="flex items-center gap-2">

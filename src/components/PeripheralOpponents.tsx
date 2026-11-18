@@ -1,4 +1,5 @@
-import { Card, isRedSuit } from '../studio/core';
+import { useId } from 'react';
+import { Card } from '../studio/core';
 import { MaskedPlayerSeatState, SACasinoPlayerView } from '../games/sa-casino/types';
 import { CardSvg } from './CardSvg';
 
@@ -151,6 +152,132 @@ function formatSeatName(name: string): string {
   return name.replace(/\s*\((Bot|Partner)\)$/i, '');
 }
 
+export interface OpponentHandsOverlayProps {
+  position: 'north' | 'west' | 'east';
+  isActive: boolean;
+  compact?: boolean;
+}
+
+export function OpponentHandsOverlay({
+  position,
+  isActive,
+  compact = false,
+}: OpponentHandsOverlayProps) {
+  const uid = useId().replace(/:/g, '');
+  const cuffGradId = `cuff-${uid}`;
+  const handGradId = `hand-${uid}`;
+
+  const positionClass =
+    position === 'north'
+      ? compact
+        ? 'left-1/2 -top-2.5 -translate-x-1/2'
+        : 'left-1/2 -top-3.5 -translate-x-1/2'
+      : position === 'west'
+        ? '-left-6 top-1/2 -translate-y-1/2'
+        : '-right-6 top-1/2 -translate-y-1/2';
+
+  const reachTransform = !isActive
+    ? 'translate3d(0px, 0px, 0)'
+    : position === 'north'
+      ? `translate3d(0px, ${compact ? 3 : 5}px, 0)`
+      : position === 'west'
+        ? 'translate3d(5px, 0px, 0)'
+        : 'translate3d(-5px, 0px, 0)';
+
+  const orientationClass =
+    position === 'west'
+      ? '-rotate-90'
+      : position === 'east'
+        ? 'rotate-90'
+        : '';
+
+  const sizeClass = compact ? 'h-[38px] w-[90px]' : 'h-[54px] w-[126px]';
+
+  return (
+    <div
+      aria-hidden="true"
+      className={`pointer-events-none absolute z-0 select-none opacity-75 ${positionClass}`}
+    >
+      <div
+        className="transition-transform duration-300 ease-out"
+        style={{ transform: reachTransform }}
+      >
+        <svg
+          viewBox="0 0 144 64"
+          fill="none"
+          className={`${sizeClass} ${orientationClass} overflow-visible`}
+        >
+          <defs>
+            <linearGradient id={cuffGradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#1d120b" />
+              <stop offset="100%" stopColor="#382317" />
+            </linearGradient>
+            <linearGradient id={handGradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#845f44" />
+              <stop offset="65%" stopColor="#a77d5c" />
+              <stop offset="100%" stopColor="#bc9371" />
+            </linearGradient>
+          </defs>
+
+          {/* Left stylized cuff, wrist & fingertips */}
+          <g>
+            <path
+              d="M18 2 L44 2 L48 22 L20 22 Z"
+              fill={`url(#${cuffGradId})`}
+              stroke="rgba(200, 157, 84, 0.45)"
+              strokeWidth="1.1"
+            />
+            <path
+              d="M20 21.5 L48 21.5 L47.5 24.5 L20.5 24.5 Z"
+              fill="rgba(240, 226, 199, 0.72)"
+            />
+            <path
+              d="M23 24.5 C22 33 25 43 30 49 C32.5 52 36 52.5 38 50.5 C39.5 49 39 45.5 37.5 43 C39.5 46.5 42.5 50 45 49.5 C47.5 49 48 45 46.5 41.5 C48.2 44.5 50.8 46.5 52.8 45.5 C54.5 44.5 54 40.5 52 37 C49 31.5 46.5 27 45.5 24.5 Z"
+              fill={`url(#${handGradId})`}
+              stroke="rgba(243, 226, 195, 0.52)"
+              strokeWidth="1.05"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M32 39 C33.5 42.5 35.5 46 37.5 48.5 M39.5 36.5 C41.5 40.5 43.5 44.5 45.5 47.5"
+              stroke="rgba(243, 226, 195, 0.28)"
+              strokeWidth="0.9"
+              strokeLinecap="round"
+            />
+          </g>
+
+          {/* Right stylized cuff, wrist & fingertips */}
+          <g transform="translate(144, 0) scale(-1, 1)">
+            <path
+              d="M18 2 L44 2 L48 22 L20 22 Z"
+              fill={`url(#${cuffGradId})`}
+              stroke="rgba(200, 157, 84, 0.45)"
+              strokeWidth="1.1"
+            />
+            <path
+              d="M20 21.5 L48 21.5 L47.5 24.5 L20.5 24.5 Z"
+              fill="rgba(240, 226, 199, 0.72)"
+            />
+            <path
+              d="M23 24.5 C22 33 25 43 30 49 C32.5 52 36 52.5 38 50.5 C39.5 49 39 45.5 37.5 43 C39.5 46.5 42.5 50 45 49.5 C47.5 49 48 45 46.5 41.5 C48.2 44.5 50.8 46.5 52.8 45.5 C54.5 44.5 54 40.5 52 37 C49 31.5 46.5 27 45.5 24.5 Z"
+              fill={`url(#${handGradId})`}
+              stroke="rgba(243, 226, 195, 0.52)"
+              strokeWidth="1.05"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M32 39 C33.5 42.5 35.5 46 37.5 48.5 M39.5 36.5 C41.5 40.5 43.5 44.5 45.5 47.5"
+              stroke="rgba(243, 226, 195, 0.28)"
+              strokeWidth="0.9"
+              strokeLinecap="round"
+            />
+          </g>
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 function ActionCalloutPill({
   text,
   swept,
@@ -254,17 +381,18 @@ function NorthSeat({
       />
 
       <div className="flex items-center gap-3">
-        {/* Perspective-foreshortened face-down card fan */}
+        {/* Perspective-foreshortened face-down card fan with stylized tabletop hands */}
         {count > 0 && (
           <div
-            className="relative flex h-[72px] items-start justify-center"
+            className="relative flex h-[74px] items-start justify-center"
             style={{
               perspective: '520px',
-              width: `${Math.max(56, (count - 1) * stepPx + 46)}px`,
+              width: `${Math.max(88, (count - 1) * stepPx + 46)}px`,
             }}
           >
+            <OpponentHandsOverlay position="north" isActive={isActive} />
             <div
-              className="relative flex h-full w-full scale-[0.88] origin-top items-center justify-center"
+              className="relative z-10 flex h-full w-full scale-[0.88] origin-top items-center justify-center"
               style={{ transform: 'rotateX(22deg)', transformStyle: 'preserve-3d' }}
             >
               {Array.from({ length: count }).map((_, idx) => {
@@ -305,14 +433,19 @@ function NorthSeat({
         )}
 
         {/* Face-Up Captured Deck showing only top-most card */}
-        <FaceUpCapturedDeck
-          topCard={info.player.topCapturedCard}
-          hasMultipleCards={info.player.capturedCount > 1}
-          size="xs"
-          isDiggable={isDiggable}
-          onClickDig={onClickDig}
-          playerName={displayName}
-        />
+        <div className="flex flex-col items-center gap-1">
+          <FaceUpCapturedDeck
+            topCard={info.player.topCapturedCard}
+            hasMultipleCards={info.player.capturedCount > 1}
+            size="xs"
+            isDiggable={isDiggable}
+            onClickDig={onClickDig}
+            playerName={displayName}
+          />
+          <span className="rounded-full border border-[#c89d54]/25 bg-[#150e09]/85 px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-[#dfc088] backdrop-blur-sm">
+            Captures
+          </span>
+        </div>
       </div>
 
       {lastActionText && (
@@ -374,60 +507,203 @@ function SideSeat({
               side === 'west' ? 'ml-3' : 'mr-3'
             }`}
             style={{
-              height: `${Math.max(64, (visibleBackCount - 1) * stepPy + 52)}px`,
+              height: `${Math.max(76, (visibleBackCount - 1) * stepPy + 52)}px`,
               width: '64px',
             }}
           >
-            {Array.from({ length: visibleBackCount }).map((_, idx) => {
-              const mid = (visibleBackCount - 1) / 2;
-              const offset = idx - mid;
-              const ratio = mid === 0 ? 0 : offset / mid;
-              const fanRot =
-                side === 'west'
-                  ? inwardTilt + ratio * maxAngle
-                  : inwardTilt - ratio * maxAngle;
-              const translateY = offset * stepPy;
-              const translateX =
-                side === 'west' ? -Math.abs(ratio) * 3 : Math.abs(ratio) * 3;
+            <OpponentHandsOverlay position={side} isActive={isActive} />
+            <div className="relative z-10 flex h-full w-full items-center justify-center">
+              {Array.from({ length: visibleBackCount }).map((_, idx) => {
+                const mid = (visibleBackCount - 1) / 2;
+                const offset = idx - mid;
+                const ratio = mid === 0 ? 0 : offset / mid;
+                const fanRot =
+                  side === 'west'
+                    ? inwardTilt + ratio * maxAngle
+                    : inwardTilt - ratio * maxAngle;
+                const translateY = offset * stepPy;
+                const translateX =
+                  side === 'west' ? -Math.abs(ratio) * 3 : Math.abs(ratio) * 3;
 
-              return (
-                <div
-                  key={idx}
-                  className="absolute transition-transform duration-200 ease-out"
-                  style={{
-                    transform: `translate3d(${translateX}px, ${translateY}px, 0) rotate(${fanRot}deg)`,
-                    zIndex: idx + 1,
-                  }}
-                >
+                return (
                   <div
-                    className="animate-card-breathe"
-                    style={{ animationDelay: `${(idx * 0.2).toFixed(2)}s` }}
+                    key={idx}
+                    className="absolute transition-transform duration-200 ease-out"
+                    style={{
+                      transform: `translate3d(${translateX}px, ${translateY}px, 0) rotate(${fanRot}deg)`,
+                      zIndex: idx + 1,
+                    }}
+                  >
+                    <div
+                      className="animate-card-breathe"
+                      style={{ animationDelay: `${(idx * 0.2).toFixed(2)}s` }}
+                    >
+                      <CardSvg
+                        faceUp={false}
+                        size="xs"
+                        className={
+                          isActive
+                            ? 'ring-1 ring-amber-400/55 shadow-lg'
+                            : 'shadow-md'
+                        }
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Face-Up Captured Deck next to hand fan */}
+        <div className="flex flex-col items-center gap-1">
+          <FaceUpCapturedDeck
+            topCard={info.player.topCapturedCard}
+            hasMultipleCards={info.player.capturedCount > 1}
+            size="xs"
+            isDiggable={isDiggable}
+            onClickDig={onClickDig}
+            playerName={displayName}
+          />
+          <span className="rounded-full border border-[#c89d54]/25 bg-[#150e09]/85 px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-[#dfc088] backdrop-blur-sm">
+            Captures
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MobileOpponentSeat({
+  info,
+  seatCount,
+  isActive,
+  isDiggable,
+  onClickDig,
+}: {
+  info: SeatRoleInfo;
+  seatCount: number;
+  isActive: boolean;
+  isDiggable: boolean;
+  onClickDig?: () => void;
+}) {
+  const shortName = formatSeatName(info.player.name);
+  const count = info.player.handCount;
+
+  const cardScale = seatCount === 1 ? 0.62 : seatCount === 2 ? 0.58 : 0.52;
+  const cardW = Math.round(52 * cardScale);
+  const cardH = Math.round(74 * cardScale);
+  const maxVisible = seatCount === 1 ? 10 : seatCount === 2 ? 8 : 7;
+  const visibleCount = Math.min(count, maxVisible);
+  const stepPx =
+    seatCount === 1 ? (visibleCount > 7 ? 9.5 : 11.5) : seatCount === 2 ? 6.5 : 4.2;
+  const maxAngle = Math.min(10, visibleCount * 1.2);
+  const fanWidth =
+    visibleCount > 0 ? Math.max(cardW, (visibleCount - 1) * stepPx + cardW) : cardW;
+
+  return (
+    <div className="flex min-w-0 flex-col items-center gap-0.5">
+      {/* Compact Seat Name Pill */}
+      <div
+        className={`flex max-w-[140px] items-center gap-1 rounded-full border px-2 py-0.5 backdrop-blur-md transition-[border-color,box-shadow,background-color] duration-200 ${
+          isActive
+            ? 'border-amber-400/85 bg-[#23180f]/95 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
+            : info.isPartner
+              ? 'border-emerald-500/35 bg-[#112219]/85'
+              : 'border-[#c89d54]/25 bg-[#19110b]/85'
+        }`}
+      >
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            isActive
+              ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.9)] animate-pulse'
+              : 'bg-stone-600/75'
+          }`}
+        />
+        <span className="truncate text-[10px] font-semibold leading-none text-[#f4efe6]">
+          {shortName}
+        </span>
+        {info.isPartner && (
+          <span className="shrink-0 rounded-full border border-emerald-400/30 bg-emerald-500/20 px-1 py-0.2 text-[8px] font-bold leading-none tracking-wide text-emerald-300">
+            {seatCount >= 3 ? 'P' : 'Partner'}
+          </span>
+        )}
+      </div>
+
+      {/* Upper Table Edge: Mini Face-Down Card Fan + Compact Face-Up Captured Deck */}
+      <div
+        className={`flex items-center justify-center ${
+          seatCount >= 3 ? 'gap-1' : 'gap-2'
+        }`}
+      >
+        <div
+          className="relative flex shrink-0 items-center justify-center"
+          style={{ width: `${fanWidth}px`, height: `${cardH}px` }}
+        >
+          {seatCount === 1 && visibleCount > 0 && (
+            <OpponentHandsOverlay position="north" isActive={isActive} compact />
+          )}
+
+          {visibleCount > 0 && (
+            <div className="relative z-10 flex h-full w-full items-center justify-center">
+              {Array.from({ length: visibleCount }).map((_, idx) => {
+                const mid = (visibleCount - 1) / 2;
+                const offset = idx - mid;
+                const ratio = mid === 0 ? 0 : offset / mid;
+                const angle = -ratio * maxAngle;
+                const translateX = offset * stepPx;
+                const translateY = -Math.abs(ratio) * 1.5;
+
+                return (
+                  <div
+                    key={idx}
+                    className="absolute transition-transform duration-200 ease-out"
+                    style={{
+                      width: 52,
+                      height: 74,
+                      transform: `translate3d(${translateX}px, ${translateY}px, 0) rotate(${angle}deg) scale(${cardScale})`,
+                      zIndex: idx + 1,
+                    }}
                   >
                     <CardSvg
                       faceUp={false}
                       size="xs"
                       className={
                         isActive
-                          ? 'ring-1 ring-amber-400/55 shadow-lg'
-                          : 'shadow-md'
+                          ? 'ring-1 ring-amber-400/50 shadow-md'
+                          : 'shadow-sm'
                       }
                     />
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
+        </div>
 
-        {/* Face-Up Captured Deck next to hand fan */}
-        <FaceUpCapturedDeck
-          topCard={info.player.topCapturedCard}
-          hasMultipleCards={info.player.capturedCount > 1}
-          size="xs"
-          isDiggable={isDiggable}
-          onClickDig={onClickDig}
-          playerName={displayName}
-        />
+        {/* Scaled FaceUpCapturedDeck showing top-most card & stack layers */}
+        <div
+          className="relative shrink-0 overflow-visible"
+          style={{ width: `${cardW}px`, height: `${cardH}px` }}
+        >
+          <div
+            className="origin-top-left"
+            style={{
+              width: 52,
+              height: 74,
+              transform: `scale(${cardScale})`,
+            }}
+          >
+            <FaceUpCapturedDeck
+              topCard={info.player.topCapturedCard}
+              hasMultipleCards={info.player.capturedCount > 1}
+              size="xs"
+              isDiggable={isDiggable}
+              onClickDig={onClickDig}
+              playerName={shortName}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -443,6 +719,10 @@ export function PeripheralOpponents({
   const north = peripheralSeats.find((s) => s.position === 'north');
   const west = peripheralSeats.find((s) => s.position === 'west');
   const east = peripheralSeats.find((s) => s.position === 'east');
+  const mobileSeats =
+    view.mode === '2v2-teams'
+      ? [west, north, east].filter((s): s is SeatRoleInfo => Boolean(s))
+      : peripheralSeats;
 
   const getSeatAction = (seat: number): { text: string | null; swept: boolean } => {
     const summary = view.lastActionSummary;
@@ -457,83 +737,34 @@ export function PeripheralOpponents({
 
   return (
     <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
-      {/* Mobile Compact Opponent Status Strip (< 768px) */}
-      <div className="md:hidden absolute top-1.5 inset-x-2 flex flex-col items-center gap-1">
-        <div className="flex w-full items-center justify-center gap-1.5 flex-wrap">
-          {peripheralSeats.map((info) => {
+      {/* Mobile Upper Table Edge Opponents (< 768px) */}
+      <div className="md:hidden absolute top-1.5 inset-x-1.5 flex max-h-[96px] flex-col items-center gap-0.5">
+        <div
+          className={`flex w-full items-start ${
+            mobileSeats.length === 1
+              ? 'justify-center'
+              : mobileSeats.length === 2
+                ? 'justify-around px-2'
+                : 'justify-between px-0.5'
+          }`}
+        >
+          {mobileSeats.map((info) => {
             const isActive =
               activeSeat === info.player.seat && view.phase === 'PLAYING';
-            const shortName = formatSeatName(info.player.name);
             const topCard = info.player.topCapturedCard;
             const isDiggable = Boolean(diggableSeats?.has(info.player.seat) && topCard);
 
             return (
-              <div
+              <MobileOpponentSeat
                 key={info.player.seat}
-                className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 backdrop-blur-md transition-[border-color,box-shadow] duration-200 ${
-                  isActive
-                    ? 'border-amber-400/85 bg-[#23180f]/95 shadow-[0_0_14px_rgba(245,158,11,0.28)]'
-                    : info.isPartner
-                      ? 'border-emerald-500/35 bg-[#112219]/85'
-                      : 'border-[#c89d54]/25 bg-[#19110b]/85'
-                }`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                    isActive
-                      ? 'bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.9)] animate-pulse'
-                      : 'bg-stone-600/75'
-                  }`}
-                />
-                <span className="max-w-[68px] truncate text-[10px] font-semibold text-[#f4efe6]">
-                  {shortName}
-                </span>
-
-                {info.isPartner && (
-                  <span className="rounded border border-emerald-400/30 bg-emerald-500/20 px-1 py-0.2 text-[8px] font-bold tracking-wider text-emerald-300 uppercase">
-                    Partner
-                  </span>
-                )}
-
-                <span
-                  className="inline-flex items-center gap-0.5 rounded border border-[#c89d54]/35 bg-[#481212]/90 px-1 py-0.2 text-[9px] font-mono-num font-bold text-[#f3dfb7] tabular-nums"
-                  title={`${info.player.handCount} cards in hand`}
-                >
-                  <span className="inline-block h-2.5 w-1.5 rounded-[1px] border border-[#c89d54]/60 bg-[#6e1c1c]" />
-                  {info.player.handCount}
-                </span>
-
-                {/* Face-Up Top Captured Card */}
-                {topCard ? (
-                  isDiggable && onClickDigSeat ? (
-                    <button
-                      type="button"
-                      onClick={() => onClickDigSeat(info.player.seat)}
-                      title={`Dig ${topCard.label}`}
-                      aria-label={`Dig ${topCard.label} from ${shortName}`}
-                      className={`pointer-events-auto inline-flex items-center gap-0.5 rounded border border-amber-400 bg-[#fbf8f1] px-1 py-0.5 text-[10px] font-mono-num font-extrabold leading-none shadow-[0_0_10px_rgba(245,158,11,0.45)] active:scale-95 ${
-                        isRedSuit(topCard.suit) ? 'text-[#a91d24]' : 'text-[#181a1f]'
-                      }`}
-                    >
-                      <span>{topCard.label}</span>
-                    </button>
-                  ) : (
-                    <span
-                      className={`inline-flex items-center rounded border border-[#d6ccb4] bg-[#fbf8f1] px-1 py-0.5 text-[10px] font-mono-num font-extrabold leading-none shadow-sm ${
-                        isRedSuit(topCard.suit) ? 'text-[#a91d24]' : 'text-[#181a1f]'
-                      }`}
-                      aria-label={`${shortName} top captured card ${topCard.label}`}
-                    >
-                      {topCard.label}
-                    </span>
-                  )
-                ) : (
-                  <span
-                    className="inline-block h-4 w-3 rounded-[2px] border border-dashed border-white/15 bg-black/25"
-                    aria-label={`${shortName} empty capture pile`}
-                  />
-                )}
-              </div>
+                info={info}
+                seatCount={mobileSeats.length}
+                isActive={isActive}
+                isDiggable={isDiggable}
+                onClickDig={
+                  onClickDigSeat ? () => onClickDigSeat(info.player.seat) : undefined
+                }
+              />
             );
           })}
         </div>
@@ -551,7 +782,7 @@ export function PeripheralOpponents({
             <ActionCalloutPill
               text={`${ownerShort}: ${action.text}`}
               swept={action.swept}
-              className="max-w-[92vw] text-[9px]"
+              className="max-w-[92vw] text-[9px] leading-tight"
             />
           );
         })()}

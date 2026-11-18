@@ -116,17 +116,17 @@ export function TopHudBar({
         )}
       </div>
 
-      {/* Right: Rules, New Game, Mute */}
+      {/* Right: Manual, New Game, Mute */}
       <div className="flex shrink-0 items-center gap-1 md:gap-1.5">
         <button
           type="button"
           onClick={onOpenRules}
-          aria-label="Open rules"
-          title="Rules"
+          aria-label="Open manual"
+          title="Manual"
           className="inline-flex h-7 w-7 items-center justify-center gap-1 rounded-lg border border-white/12 bg-black/30 text-[11px] font-semibold text-stone-200 transition-all duration-150 hover:border-[#c89d54]/45 hover:bg-white/10 active:scale-[0.97] md:h-auto md:w-auto md:px-2.5 md:py-1.5"
         >
           <BookOpen className="h-3.5 w-3.5 text-[#c89d54] md:h-3 md:w-3" />
-          <span className="hidden md:inline">Rules</span>
+          <span className="hidden md:inline">Manual</span>
         </button>
 
         <button

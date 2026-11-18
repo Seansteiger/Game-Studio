@@ -5,11 +5,28 @@ import {
   FIXED_DT,
 } from '../studio/core/springPhysics';
 
+export interface CaptureFlightEvent {
+  key: number;
+  seat: number;
+  mode: '1v1' | '3p-ffa' | '2v2-teams';
+  cards: readonly { label: string; isRed: boolean }[];
+}
+
+export interface PlayedCardFlightEvent {
+  key: number;
+  seat: number;
+  mode: '1v1' | '3p-ffa' | '2v2-teams';
+  label: string;
+  isRed: boolean;
+  faceUp?: boolean;
+}
+
 export interface TableCanvasProps {
   shuffleTriggerKey: number;
   roundDealTriggerKey: number;
   capturePulseKey: number;
   sweepTriggerKey: number;
+  captureFlightEvent?: CaptureFlightEvent | null;
   activeDragPoint: { x: number; y: number } | null;
   handOriginPoint: { x: number; y: number } | null;
 }
@@ -127,27 +144,107 @@ function drawMiniCardFace(
 
   const hw = w * 0.5;
   const hh = h * 0.5;
+  const radius = Math.max(4, Math.min(w, h) * 0.1);
 
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.44)';
-  drawRoundedRectPath(ctx, -hw + 2, -hh + 3, w, h, 4);
+  // Soft cast shadow
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.46)';
+  drawRoundedRectPath(ctx, -hw + 2.5, -hh + 3.5, w, h, radius);
   ctx.fill();
 
+  // Ivory card stock
   ctx.fillStyle = '#fbf8f1';
-  ctx.strokeStyle = '#d9cfb9';
-  ctx.lineWidth = 0.9;
-  drawRoundedRectPath(ctx, -hw, -hh, w, h, 4);
+  ctx.strokeStyle = '#d4c8ae';
+  ctx.lineWidth = 1;
+  drawRoundedRectPath(ctx, -hw, -hh, w, h, radius);
   ctx.fill();
   ctx.stroke();
 
+  // Thin inner frame
+  ctx.strokeStyle = 'rgba(180, 148, 92, 0.28)';
+  ctx.lineWidth = 0.75;
+  drawRoundedRectPath(ctx, -hw + 3, -hh + 3, w - 6, h - 6, Math.max(2, radius - 2));
+  ctx.stroke();
+
   if (label) {
-    ctx.fillStyle = isRed ? '#a91d24' : '#181a1f';
-    ctx.font = '700 10px "JetBrains Mono", monospace';
+    const suitMatch = label.match(/([♠♥♦♣])$/);
+    const suit = suitMatch ? suitMatch[1] : '';
+    const rank = suit ? label.slice(0, -1) : label;
+    const inkColor = isRed ? '#a91d24' : '#181a1f';
+    ctx.fillStyle = inkColor;
+
+    // Bold rank + suit in top-left corner
+    const cornerFontSize = Math.max(9, Math.round(w * 0.22));
+    ctx.font = `700 ${cornerFontSize}px "JetBrains Mono", monospace`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(rank, -hw + 5, -hh + 4.5);
+
+    if (suit) {
+      ctx.font = `700 ${Math.max(8, cornerFontSize - 1)}px "Inter", system-ui, sans-serif`;
+      ctx.fillText(suit, -hw + 5, -hh + 4.5 + cornerFontSize * 0.95);
+    }
+
+    // Center suit / rank emblem
+    const centerFontSize = suit
+      ? Math.max(16, Math.round(w * 0.44))
+      : Math.max(13, Math.round(w * 0.34));
+    ctx.font = `700 ${centerFontSize}px "Inter", system-ui, sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(label, 0, 0);
+    ctx.fillText(suit || rank, 0, 2);
   }
 
   ctx.restore();
+}
+
+function getSeatCapturedDeckPoint(
+  seat: number,
+  mode: '1v1' | '3p-ffa' | '2v2-teams',
+  width: number,
+  height: number
+): { x: number; y: number } {
+  const isMobile = width < 768;
+
+  if (seat === 0) {
+    return isMobile
+      ? { x: width - 42, y: height - 165 }
+      : { x: width - 74, y: height - 86 };
+  }
+
+  if (mode === '1v1') {
+    if (seat === 1) {
+      return { x: width * 0.5 + 115, y: 76 };
+    }
+  } else if (mode === '3p-ffa') {
+    if (seat === 1) {
+      return isMobile
+        ? { x: width * 0.28, y: 72 }
+        : { x: 115, y: height * 0.5 };
+    }
+    if (seat === 2) {
+      return isMobile
+        ? { x: width * 0.72, y: 72 }
+        : { x: width - 115, y: height * 0.5 };
+    }
+  } else if (mode === '2v2-teams') {
+    if (seat === 2) {
+      return isMobile
+        ? { x: width * 0.5, y: 72 }
+        : { x: width * 0.5 + 115, y: 76 };
+    }
+    if (seat === 1) {
+      return isMobile
+        ? { x: width * 0.18, y: 72 }
+        : { x: 115, y: height * 0.5 };
+    }
+    if (seat === 3) {
+      return isMobile
+        ? { x: width * 0.82, y: 72 }
+        : { x: width - 115, y: height * 0.5 };
+    }
+  }
+
+  return { x: width * 0.5, y: 76 };
 }
 
 function buildBaizePattern(ctx: CanvasRenderingContext2D): CanvasPattern | null {
@@ -210,9 +307,9 @@ function paintStaticTableLayer(
   ctx.fillStyle = walnutGrad;
   ctx.fillRect(0, 0, width, height);
 
-  // 2. Outer padded walnut rail shadow & inset brass rim
-  const padX = Math.max(18, width * 0.026);
-  const padY = Math.max(16, height * 0.028);
+  // 2. Outer padded walnut rail shadow & inset brass rim (fuller, rounder silhouette)
+  const padX = Math.max(8, width * 0.012);
+  const padY = Math.max(8, height * 0.014);
   const rx = Math.max(120, width * 0.5 - padX);
   const ry = Math.max(90, height * 0.5 - padY);
   const cx = width * 0.5;
@@ -221,8 +318,8 @@ function paintStaticTableLayer(
   // Walnut rail bevel highlight
   ctx.save();
   ctx.beginPath();
-  ctx.ellipse(cx, cy, rx + 5, ry + 5, 0, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(200, 157, 84, 0.16)';
+  ctx.ellipse(cx, cy, rx + 4, ry + 4, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(200, 157, 84, 0.2)';
   ctx.lineWidth = 2;
   ctx.stroke();
   ctx.restore();
@@ -273,27 +370,28 @@ function paintStaticTableLayer(
   ctx.beginPath();
   ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
   ctx.strokeStyle = 'rgba(0, 0, 0, 0.65)';
-  ctx.lineWidth = 18;
+  ctx.lineWidth = 16;
   ctx.stroke();
 
-  // Burnished brass double inlay ellipse
+  // Double burnished-brass rim inlays
   ctx.beginPath();
-  ctx.ellipse(cx, cy, Math.max(40, rx - 22), Math.max(30, ry - 20), 0, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(200, 157, 84, 0.28)';
-  ctx.lineWidth = 1.4;
+  ctx.ellipse(cx, cy, Math.max(40, rx - 14), Math.max(30, ry - 14), 0, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(200, 157, 84, 0.32)';
+  ctx.lineWidth = 1.5;
   ctx.stroke();
 
   ctx.beginPath();
-  ctx.ellipse(cx, cy, Math.max(36, rx - 28), Math.max(26, ry - 26), 0, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(200, 157, 84, 0.12)';
-  ctx.lineWidth = 0.8;
+  ctx.ellipse(cx, cy, Math.max(36, rx - 20), Math.max(26, ry - 20), 0, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(200, 157, 84, 0.15)';
+  ctx.lineWidth = 0.9;
   ctx.stroke();
 
-  // Subtle center table crest ring
+  // Crisp circular inner crest ring
+  const crestRadius = Math.max(24, Math.min(rx, ry) * 0.34);
   ctx.beginPath();
-  ctx.ellipse(cx, cy, Math.min(180, rx * 0.28), Math.min(110, ry * 0.26), 0, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(200, 157, 84, 0.08)';
-  ctx.lineWidth = 1;
+  ctx.arc(cx, cy, crestRadius, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(200, 157, 84, 0.14)';
+  ctx.lineWidth = 1.2;
   ctx.stroke();
 
   ctx.restore();
@@ -305,6 +403,7 @@ export function TableCanvas({
   roundDealTriggerKey,
   capturePulseKey,
   sweepTriggerKey,
+  captureFlightEvent = null,
   activeDragPoint,
   handOriginPoint,
 }: TableCanvasProps) {
@@ -352,6 +451,7 @@ export function TableCanvas({
     roundDeal: roundDealTriggerKey,
     capture: capturePulseKey,
     sweep: sweepTriggerKey,
+    captureFlight: captureFlightEvent?.key ?? 0,
   });
 
   const spawnShockwave = (
@@ -506,6 +606,49 @@ export function TableCanvas({
     spawnShockwave(cx, cy, maxR * 0.86, 0.78, 0.05, 2.2, 'emerald', true);
     spawnShockwave(cx, cy, maxR * 0.7, 0.68, 0.12, 1.8, 'gold', false);
   }, [sweepTriggerKey]);
+
+  // Handle captureFlightEvent changes (fly captured cards into capturing seat's deck)
+  useEffect(() => {
+    if (!captureFlightEvent || captureFlightEvent.key <= 0) return;
+    if (captureFlightEvent.key === prevTriggersRef.current.captureFlight) return;
+    prevTriggersRef.current.captureFlight = captureFlightEvent.key;
+
+    const cards = captureFlightEvent.cards.slice(0, 10);
+    if (cards.length === 0) return;
+
+    const { width, height } = sizeRef.current;
+    const dest = getSeatCapturedDeckPoint(
+      captureFlightEvent.seat,
+      captureFlightEvent.mode,
+      width,
+      height
+    );
+    const flights = flightsRef.current;
+    const mid = (cards.length - 1) * 0.5;
+
+    for (let idx = 0; idx < cards.length; idx++) {
+      const card = cards[idx];
+      const startX = width * 0.5 + (idx - mid) * 28;
+      const startY = height * 0.48 + (idx % 2 === 0 ? -12 : 12);
+      const startRot = (idx - mid) * 0.055;
+      const endRot = ((idx % 3) - 1) * 0.04;
+
+      flights.spawn(
+        startX,
+        startY,
+        dest.x,
+        dest.y,
+        startRot,
+        endRot,
+        0.56,
+        idx * 0.065,
+        -85,
+        true,
+        card.label,
+        card.isRed
+      );
+    }
+  }, [captureFlightEvent]);
 
   // Main resize observer + fixed-timestep 60fps RAF loop
   useEffect(() => {
@@ -700,8 +843,8 @@ export function TableCanvas({
             ctx,
             f.x,
             f.y,
-            CARD_MINI_W * 1.15,
-            CARD_MINI_H * 1.15,
+            48,
+            68,
             f.rot,
             f.scale,
             f.label,

@@ -496,6 +496,7 @@ export function applySACasinoAction(
         playedCard,
         dugCard,
         dugFromSeat: dugSeat,
+        capturedCards: wonCards,
         capturedCount: wonCards.length,
         isSweep,
       },

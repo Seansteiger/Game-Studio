@@ -6,7 +6,7 @@ import { FaceUpCapturedDeck, PeripheralOpponents } from './components/Peripheral
 import { PlayerHandFan } from './components/PlayerHandFan';
 import { RulesDrawer } from './components/RulesDrawer';
 import { ScoreBreakdownModal } from './components/ScoreBreakdownModal';
-import { TableCanvas } from './components/TableCanvas';
+import { TableCanvas, type CaptureFlightEvent } from './components/TableCanvas';
 import { TopHudBar } from './components/TopHudBar';
 import {
   BuildOption,
@@ -30,6 +30,7 @@ import {
 import {
   Card,
   getDeterministicJitter,
+  isRedSuit,
   sharedAudioEngine,
 } from './studio/core';
 
@@ -130,6 +131,8 @@ export function App() {
   const [roundDealTriggerKey, setRoundDealTriggerKey] = useState(0);
   const [capturePulseKey, setCapturePulseKey] = useState(0);
   const [sweepTriggerKey, setSweepTriggerKey] = useState(0);
+  const [captureFlightEvent, setCaptureFlightEvent] = useState<CaptureFlightEvent | null>(null);
+  const captureFlightKeyRef = useRef(0);
 
   const foleyTimersRef = useRef<number[]>([]);
 
@@ -209,10 +212,26 @@ export function App() {
           case 'CARD_TRAILED':
             sharedAudioEngine.playCardSlide();
             break;
-          case 'CARD_CAPTURED':
+          case 'CARD_CAPTURED': {
             sharedAudioEngine.playCardSnap(1.06);
             setCapturePulseKey((k) => k + 1);
+            const rawCards = (ev.data.capturedCards as readonly Card[] | undefined) ?? [];
+            const seat = (ev.data.seat as number | undefined) ?? 0;
+            const cards = rawCards.map((c) => ({
+              label: c.label,
+              isRed: isRedSuit(c.suit),
+            }));
+            if (cards.length > 0) {
+              const nextKey = ++captureFlightKeyRef.current;
+              setCaptureFlightEvent({
+                key: nextKey,
+                seat,
+                mode: nextState.mode,
+                cards,
+              });
+            }
             break;
+          }
           case 'BUILD_CREATED':
           case 'BUILD_RAISED':
             sharedAudioEngine.playBuildTap(false);
@@ -475,6 +494,7 @@ export function App() {
       setInlineActionState(null);
       setPendingUndo(null);
       setUndoRemainingSec(0);
+      setCaptureFlightEvent(null);
       setErrorToast(null);
 
       setGameState((prev) =>
@@ -830,6 +850,7 @@ export function App() {
     setGameState(pendingUndo.prevState);
     setPendingUndo(null);
     setUndoRemainingSec(0);
+    setCaptureFlightEvent(null);
     setInlineActionState(null);
     setSelectedCardId(null);
     setErrorToast(null);
@@ -1052,6 +1073,7 @@ export function App() {
           roundDealTriggerKey={roundDealTriggerKey}
           capturePulseKey={capturePulseKey}
           sweepTriggerKey={sweepTriggerKey}
+          captureFlightEvent={captureFlightEvent}
           activeDragPoint={
             dragState ? { x: dragState.clientX, y: dragState.clientY } : null
           }
@@ -1090,7 +1112,7 @@ export function App() {
         {/* Center Table Arena: Loose Cards & Build Stacks */}
         <section
           aria-label="Center table cards"
-          className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-2.5 pt-14 pb-36 md:px-24 md:pt-24 md:pb-44"
+          className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-2.5 pt-24 pb-36 md:px-24 md:pt-24 md:pb-44"
         >
           <div className="pointer-events-auto flex max-h-full max-w-5xl flex-wrap items-center justify-center gap-2 sm:gap-3.5">
             {viewerView.table.length === 0 ? (
