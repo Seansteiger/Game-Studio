@@ -863,6 +863,87 @@ export function findValidTableDigMerges(
   return options;
 }
 
+export function formatBuildRank(value: number): string {
+  return value === 1 ? 'A' : String(value);
+}
+
+function rankArticle(value: number): string {
+  return value === 1 || value === 8 ? 'an' : 'a';
+}
+
+/**
+ * Diagnoses why `playedCard` cannot legally capture or build onto `targetItem`.
+ * Used to give clear in-game contingency feedback instead of silently dropping the card.
+ */
+export function diagnoseFailedTargetPlay(
+  playedCard: Card,
+  targetItem: TableItem,
+  hand: readonly Card[],
+  table: readonly TableItem[],
+  seat: number
+): string {
+  const remainingHand = hand.filter((c) => c.id !== playedCard.id);
+  const ownedBuild = table.find(
+    (item): item is TableBuildStack => item.kind === 'build' && item.ownerSeat === seat
+  );
+
+  if (targetItem.kind === 'build') {
+    const buildVal = targetItem.targetValue;
+    const buildLabel = formatBuildRank(buildVal);
+
+    if (playedCard.rank === buildVal && !canPlayerCoverOwnedBuilds(remainingHand, table.filter((it) => it.id !== targetItem.id), seat)) {
+      return `Hold onto your ${playedCard.label} — you need it to capture your ${formatBuildRank(ownedBuild?.targetValue ?? buildVal)} build.`;
+    }
+
+    if (targetItem.isCemented && playedCard.rank !== buildVal) {
+      return `Build ${buildLabel} is locked — it can only be captured with a ${buildLabel}.`;
+    }
+
+    if (ownedBuild && ownedBuild.id !== targetItem.id) {
+      return `You already have a ${formatBuildRank(ownedBuild.targetValue)} build on the table.`;
+    }
+
+    if (playedCard.rank === buildVal) {
+      const hasSecondCopy = remainingHand.some((c) => c.rank === buildVal);
+      if (!hasSecondCopy) {
+        return `You need another ${buildLabel} in your hand to keep ${buildLabel}.`;
+      }
+    }
+
+    const raisedSum = buildVal + playedCard.rank;
+    if (raisedSum > 10) {
+      return `Cannot build over 10 (${formatBuildRank(playedCard.rank)} + ${buildLabel} = ${raisedSum}).`;
+    }
+    if (!remainingHand.some((c) => c.rank === raisedSum)) {
+      return `You need ${rankArticle(raisedSum)} ${formatBuildRank(raisedSum)} in your hand to build ${formatBuildRank(raisedSum)}.`;
+    }
+  } else {
+    const targetVal = targetItem.card.rank;
+    const targetLabel = formatBuildRank(targetVal);
+
+    if (ownedBuild) {
+      return `You already have ${rankArticle(ownedBuild.targetValue)} ${formatBuildRank(ownedBuild.targetValue)} build on the table.`;
+    }
+
+    if (playedCard.rank === targetVal) {
+      const hasSecondCopy = remainingHand.some((c) => c.rank === targetVal);
+      if (!hasSecondCopy) {
+        return `You need another ${targetLabel} in your hand to keep ${targetLabel}.`;
+      }
+    }
+
+    const combinedSum = playedCard.rank + targetVal;
+    if (combinedSum > 10) {
+      return `Cannot build over 10 (${formatBuildRank(playedCard.rank)} + ${targetLabel} = ${combinedSum}).`;
+    }
+    if (!remainingHand.some((c) => c.rank === combinedSum)) {
+      return `You need ${rankArticle(combinedSum)} ${formatBuildRank(combinedSum)} in your hand to build ${formatBuildRank(combinedSum)}.`;
+    }
+  }
+
+  return `${playedCard.label} cannot capture or build on that card.`;
+}
+
 /**
  * Checks whether a card can legally be trailed onto the table.
  */
@@ -877,7 +958,7 @@ export function canTrailCard(
   if (!canPlayerCoverOwnedBuilds(remainingHand, table, seat)) {
     return {
       valid: false,
-      reason: `Possession rule: cannot trail ${playedCard.label} because you need it to capture your active build.`,
+      reason: `Hold onto your ${playedCard.label} — you need it to capture your active build.`,
     };
   }
 
@@ -896,7 +977,7 @@ export function canTrailCard(
         return {
           valid: false,
           reason:
-            '1v1 Round 1 rule: cannot trail a loose card while owning a build if you have a legal capture or build.',
+            'In Round 1, capture or keep building while you have a build on the table.',
         };
       }
     }

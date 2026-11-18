@@ -6,6 +6,7 @@ import {
   canTrailCard,
   chooseTacticalBotAction,
   createInitialSACasinoState,
+  diagnoseFailedTargetPlay,
   findValidBuildOptions,
   findValidCaptureOptions,
   findValidTableDigMerges,
@@ -811,5 +812,73 @@ describe('SA Casino 40-Card Rules Engine', () => {
     });
     expect(r2TrailAction.error).toBeUndefined();
     expect(r2TrailAction.state.table).toHaveLength(2);
+  });
+
+  it('diagnoses illegal build contingencies clearly (missing target rank, >10, locked build, second build)', () => {
+    const threeS = createCard('S', 3);
+    const fiveH = createCard('H', 5);
+    const sevenD = createCard('D', 7);
+    const sixC = createCard('C', 6);
+    const twoH = createCard('H', 2);
+    const nineC = createCard('C', 9);
+    const fourS = createCard('S', 4);
+
+    // 1. Trying to build 8 (3 + 5) without holding an 8 in hand
+    const missingTargetMsg = diagnoseFailedTargetPlay(
+      threeS,
+      makeLoose(fiveH),
+      [threeS, fourS],
+      [makeLoose(fiveH)],
+      0
+    );
+    expect(missingTargetMsg).toContain('need an 8');
+
+    // 2. Trying to build above 10 (7 + 6 = 13)
+    const overTenMsg = diagnoseFailedTargetPlay(
+      sevenD,
+      makeLoose(sixC),
+      [sevenD, nineC],
+      [makeLoose(sixC)],
+      0
+    );
+    expect(overTenMsg).toContain('Cannot build over 10');
+
+    // 3. Trying to raise a locked/cemented build
+    const lockedBuild = {
+      kind: 'build' as const,
+      id: 'bld-locked-7',
+      cards: [createCard('C', 7), createCard('H', 7)],
+      components: [[createCard('C', 7)], [createCard('H', 7)]],
+      targetValue: 7,
+      ownerSeat: 1,
+      isCemented: true,
+    };
+    const lockedMsg = diagnoseFailedTargetPlay(
+      twoH,
+      lockedBuild,
+      [twoH, nineC],
+      [lockedBuild],
+      0
+    );
+    expect(lockedMsg).toContain('locked');
+
+    // 4. Trying to start a second build while already owning an active build
+    const ownBuild = {
+      kind: 'build' as const,
+      id: 'bld-own-4',
+      cards: [fourS],
+      components: [[fourS]],
+      targetValue: 4,
+      ownerSeat: 0,
+      isCemented: false,
+    };
+    const secondBuildMsg = diagnoseFailedTargetPlay(
+      threeS,
+      makeLoose(fiveH),
+      [threeS, fourS, createCard('H', 8)],
+      [ownBuild, makeLoose(fiveH)],
+      0
+    );
+    expect(secondBuildMsg).toContain('already have a 4 build');
   });
 });

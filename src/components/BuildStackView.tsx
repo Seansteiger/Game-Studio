@@ -87,7 +87,9 @@ export function BuildStackView({
         {!build.isCemented && (
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
         )}
-        <span className="font-extrabold leading-none">{build.targetValue}</span>
+        <span className="font-extrabold leading-none">
+          {build.targetValue === 1 ? 'A' : build.targetValue}
+        </span>
         {build.isCemented && (
           <Lock
             className={`${compact ? 'w-2.5 h-2.5' : 'w-3 h-3'} text-[#e6be72] shrink-0`}

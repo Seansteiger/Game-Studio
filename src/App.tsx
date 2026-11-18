@@ -21,9 +21,11 @@ import {
   canTrailCard,
   chooseTacticalBotAction,
   createInitialSACasinoState,
+  diagnoseFailedTargetPlay,
   findValidBuildOptions,
   findValidCaptureOptions,
   findValidTableDigMerges,
+  formatBuildRank,
   getPossessionLockedValues,
   getSACasinoPlayerView,
 } from './games/sa-casino';
@@ -58,22 +60,23 @@ function getBuildPillLabel(
   option: BuildOption,
   playedRank: number
 ): { text: string; isKeep: boolean; isLocked: boolean } {
+  const rankLabel = formatBuildRank(option.targetValue);
   if (option.resultingCemented && option.targetValue === playedRank) {
     return {
-      text: `Keep ${option.targetValue}`,
+      text: `Keep ${rankLabel}`,
       isKeep: true,
       isLocked: true,
     };
   }
   if (option.resultingCemented) {
     return {
-      text: `Build ${option.targetValue} (Lock)`,
+      text: `Build ${rankLabel} (Lock)`,
       isKeep: false,
       isLocked: true,
     };
   }
   return {
-    text: `Build ${option.targetValue}`,
+    text: `Build ${rankLabel}`,
     isKeep: false,
     isLocked: false,
   };
@@ -265,6 +268,7 @@ export function App() {
     (prevState: SACasinoState, action: SACasinoAction, label: string): boolean => {
       const ok = applyAndReact(prevState, action);
       if (ok) {
+        setErrorToast(null);
         setPendingUndo({
           prevState,
           label,
@@ -645,25 +649,13 @@ export function App() {
       );
 
       if (matchingCaptures.length === 0 && matchingBuilds.length === 0) {
-        if (trail.valid) {
-          const ok = commitPlayerMove(
-            gameState,
-            {
-              type: 'TRAIL',
-              playerSeat: 0,
-              payload: { cardId: card.id },
-            },
-            `Place ${card.label}`
-          );
-          if (ok) {
-            setSelectedCardId(null);
-            setInlineActionState(null);
-          }
-        } else {
-          setSelectedCardId(null);
-          setInlineActionState(null);
-          setErrorToast(trail.reason ?? `Cannot play ${card.label} on that target.`);
-        }
+        const targetItem = viewerView.table.find((it) => it.id === dropTargetId);
+        const reason = targetItem
+          ? diagnoseFailedTargetPlay(card, targetItem, myHand, viewerView.table, 0)
+          : `${card.label} cannot capture or build on that target.`;
+        setSelectedCardId(null);
+        setInlineActionState(null);
+        setErrorToast(reason);
         return;
       }
 
@@ -719,7 +711,9 @@ export function App() {
             dugTargetSeat: null,
           });
         } else {
-          setErrorToast(`${selectedCard.label} cannot capture or build on that target.`);
+          setErrorToast(
+            diagnoseFailedTargetPlay(selectedCard, item, myHand, viewerView.table, 0)
+          );
         }
         return;
       }

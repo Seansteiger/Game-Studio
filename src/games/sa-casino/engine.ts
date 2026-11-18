@@ -166,15 +166,16 @@ function advanceAfterPlayerTurn(
     };
   }
 
-  // Deal is finished: award any remaining loose/uncaptured table cards to lastCapturerSeat
+  // Deal is finished: award any remaining loose/uncaptured table cards to lastCapturerSeat (fallback to dealerSeat)
   let finalPlayers = updatedPlayers;
   let finalTable = updatedTable;
-  if (updatedTable.length > 0 && updatedLastCapturerSeat !== null) {
+  if (updatedTable.length > 0) {
+    const sweepSeat = updatedLastCapturerSeat ?? state.dealerSeat;
     const leftoverCards = updatedTable.flatMap((it) =>
       it.kind === 'loose' ? [it.card] : [...it.cards]
     );
     finalPlayers = updatedPlayers.map((p) =>
-      p.seat === updatedLastCapturerSeat
+      p.seat === sweepSeat
         ? { ...p, capturedCards: [...p.capturedCards, ...leftoverCards] }
         : p
     );
@@ -666,19 +667,29 @@ export function getSACasinoPlayerView(
   state: SACasinoState,
   viewerSeat: number
 ): SACasinoPlayerView {
-  const maskedPlayers: MaskedPlayerSeatState[] = state.players.map((p) => ({
-    seat: p.seat,
-    name: p.name,
-    isAI: p.isAI,
-    teamId: p.teamId,
-    handCount: p.hand.length,
-    hand: p.seat === viewerSeat ? p.hand : null,
-    capturedCount: p.capturedCards.length,
-    capturedCards: p.capturedCards,
-    topCapturedCard:
-      p.capturedCards.length > 0 ? p.capturedCards[p.capturedCards.length - 1] : null,
-    sweeps: p.sweeps,
-  }));
+  const revealAllCaptures = state.phase === 'DEAL_OVER';
+  const maskedPlayers: MaskedPlayerSeatState[] = state.players.map((p) => {
+    const topCapturedCard =
+      p.capturedCards.length > 0 ? p.capturedCards[p.capturedCards.length - 1] : null;
+    return {
+      seat: p.seat,
+      name: p.name,
+      isAI: p.isAI,
+      teamId: p.teamId,
+      handCount: p.hand.length,
+      hand: p.seat === viewerSeat ? p.hand : null,
+      capturedCount: p.capturedCards.length,
+      // During active play, only expose the top-most captured card of other players (strictly hiding buried cards)
+      capturedCards:
+        revealAllCaptures || p.seat === viewerSeat
+          ? p.capturedCards
+          : topCapturedCard
+            ? [topCapturedCard]
+            : [],
+      topCapturedCard,
+      sweeps: p.sweeps,
+    };
+  });
 
   return {
     viewerSeat,
