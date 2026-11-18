@@ -2,6 +2,7 @@ import { Card, isBigCasino, isLittleCasino } from '../../studio/core';
 import {
   BuildOption,
   CaptureOption,
+  LooseBuildMergeOption,
   TableBuildStack,
   TableDigMergeOption,
   TableItem,
@@ -13,9 +14,31 @@ export interface PlayerCapturedSnapshot {
   readonly capturedCards: readonly Card[];
 }
 
+export interface ActiveDugCardInput {
+  readonly sourceSeat: number;
+  readonly card: Card;
+}
+
 export interface TrailCheckOptions {
   readonly isRound1Of1v1?: boolean;
   readonly players?: readonly PlayerCapturedSnapshot[];
+  readonly activeDugCard?: ActiveDugCardInput | null;
+}
+
+export interface RankPartitionItem {
+  readonly id: string;
+  readonly rank: number;
+  readonly isFaceCard: boolean;
+}
+
+/**
+ * Sorts cards inside a single build component descending by rank
+ * (larger cards underneath, smaller cards on top) with deterministic ID tie-breaking.
+ */
+export function sortComponentDesc(cards: readonly Card[]): Card[] {
+  return cards
+    .slice()
+    .sort((a, b) => b.rank - a.rank || a.id.localeCompare(b.id));
 }
 
 function getOpponentTopCapturedCards(
@@ -34,18 +57,30 @@ function getOpponentTopCapturedCards(
   return result;
 }
 
-function findLooseSubsetsSummingTo(
-  items: readonly TableLooseCard[],
+function getAvailableDugCards(
+  players: readonly PlayerCapturedSnapshot[],
+  seat: number,
+  activeDugCard?: ActiveDugCardInput | null
+): { seat: number; card: Card }[] {
+  if (activeDugCard) {
+    if (activeDugCard.sourceSeat === seat) return [];
+    return [{ seat: activeDugCard.sourceSeat, card: activeDugCard.card }];
+  }
+  return getOpponentTopCapturedCards(players, seat);
+}
+
+function findRankUnitSubsetsSummingTo<T extends RankPartitionItem>(
+  items: readonly T[],
   targetSum: number,
   maxCards = 4
-): TableLooseCard[][] {
+): T[][] {
   if (targetSum <= 0 || items.length === 0) return [];
-  const results: TableLooseCard[][] = [];
+  const results: T[][] = [];
   const seenKeys = new Set<string>();
 
   const backtrack = (
     startIdx: number,
-    current: TableLooseCard[],
+    current: T[],
     currentSum: number
   ) => {
     if (currentSum === targetSum && current.length > 0) {
@@ -63,9 +98,9 @@ function findLooseSubsetsSummingTo(
 
     for (let i = startIdx; i < items.length; i++) {
       const item = items[i];
-      if (item.card.isFaceCard) continue;
+      if (item.isFaceCard) continue;
       current.push(item);
-      backtrack(i + 1, current, currentSum + item.card.rank);
+      backtrack(i + 1, current, currentSum + item.rank);
       current.pop();
     }
   };
@@ -153,24 +188,24 @@ export function getPossessionLockedValues(
  * Finds all disjoint subsets of numeric loose cards that partition cleanly into groups
  * each summing to `targetSum`. Used for both Capture validation and multi-group Cement validation.
  */
-export function findDisjointSumPartitions(
-  cards: readonly Card[],
+export function findDisjointSumPartitions<T extends RankPartitionItem>(
+  cards: readonly T[],
   targetSum: number
-): Card[][][] {
-  const results: Card[][][] = [];
+): T[][][] {
+  const results: T[][][] = [];
   const seenKeys = new Set<string>();
 
   // Helper: find all subsets of remaining indices summing to targetSum
   const findSubsets = (
-    pool: readonly Card[],
+    pool: readonly T[],
     startIdx: number,
-    current: Card[],
+    current: T[],
     currentSum: number,
-    out: { group: Card[]; rest: Card[] }[],
+    out: { group: T[]; rest: T[] }[],
     usedMask: boolean[]
   ) => {
     if (currentSum === targetSum && current.length > 0) {
-      const rest: Card[] = [];
+      const rest: T[] = [];
       for (let i = 0; i < pool.length; i++) {
         if (!usedMask[i]) rest.push(pool[i]);
       }
@@ -191,14 +226,14 @@ export function findDisjointSumPartitions(
   };
 
   // Canonical key so equivalent partitions aren't duplicated
-  const buildCanonicalKey = (groups: readonly (readonly Card[])[]): string => {
+  const buildCanonicalKey = (groups: readonly (readonly T[])[]): string => {
     return groups
       .map((g) => g.map((c) => c.id).sort().join('+'))
       .sort()
       .join('|');
   };
 
-  const searchPartitions = (remaining: readonly Card[], chosenGroups: Card[][]) => {
+  const searchPartitions = (remaining: readonly T[], chosenGroups: T[][]) => {
     if (chosenGroups.length > 0) {
       const key = buildCanonicalKey(chosenGroups);
       if (!seenKeys.has(key)) {
@@ -208,7 +243,7 @@ export function findDisjointSumPartitions(
     }
 
     if (remaining.length === 0) return;
-    const candidates: { group: Card[]; rest: Card[] }[] = [];
+    const candidates: { group: T[]; rest: T[] }[] = [];
     findSubsets(
       remaining,
       0,
@@ -238,7 +273,10 @@ export function findDisjointSumPartitions(
  * Checks whether an exact set of cards can be partitioned completely into
  * one or more disjoint groups, each summing to `targetSum`.
  */
-export function canExactPartitionIntoSums(cards: readonly Card[], targetSum: number): Card[][] | null {
+export function canExactPartitionIntoSums<T extends Pick<RankPartitionItem, 'rank' | 'isFaceCard'>>(
+  cards: readonly T[],
+  targetSum: number
+): T[][] | null {
   if (cards.length === 0) return null;
   if (cards.some((c) => c.isFaceCard)) return null;
   const totalSum = cards.reduce((acc, c) => acc + c.rank, 0);
@@ -246,7 +284,7 @@ export function canExactPartitionIntoSums(cards: readonly Card[], targetSum: num
 
   const numGroups = totalSum / targetSum;
   const sorted = cards.slice().sort((a, b) => b.rank - a.rank);
-  const groups: Card[][] = Array.from({ length: numGroups }, () => []);
+  const groups: T[][] = Array.from({ length: numGroups }, () => []);
   const groupSums = new Array<number>(numGroups).fill(0);
 
   const backtrack = (idx: number): boolean => {
@@ -302,7 +340,8 @@ export function findValidCaptureOptions(
   table: readonly TableItem[],
   seat: number,
   isFinalDealCard: boolean,
-  players: readonly PlayerCapturedSnapshot[] = []
+  players: readonly PlayerCapturedSnapshot[] = [],
+  activeDugCard: ActiveDugCardInput | null = null
 ): CaptureOption[] {
   const remainingHand = hand.filter((c) => c.id !== playedCard.id);
   const matchingBuilds = table.filter(
@@ -313,7 +352,8 @@ export function findValidCaptureOptions(
     (item): item is TableLooseCard =>
       item.kind === 'loose' && item.card.rank === playedCard.rank
   );
-  const opponentTopCards = getOpponentTopCapturedCards(players, seat);
+  const opponentTopCards = getAvailableDugCards(players, seat, activeDugCard);
+  const mustUseDug = Boolean(activeDugCard);
 
   const options: CaptureOption[] = [];
   const seenOptionKeys = new Set<string>();
@@ -323,6 +363,9 @@ export function findValidCaptureOptions(
     dugEntry?: { seat: number; card: Card }
   ) => {
     if (items.length === 0) return;
+    if (mustUseDug && (!dugEntry || dugEntry.seat !== activeDugCard?.sourceSeat)) {
+      return;
+    }
     const ids = items.map((it) => it.id).sort();
     const dugSeat = dugEntry ? dugEntry.seat : null;
     const key = `${ids.join(',')}|dig:${dugSeat ?? 'none'}`;
@@ -372,7 +415,9 @@ export function findValidCaptureOptions(
     // Face cards capture matching ranks only (no numeric sums)
     if (matchingLoose.length > 0 || matchingBuilds.length > 0) {
       const baseItems = [...matchingBuilds, ...matchingLoose];
-      registerOption(baseItems);
+      if (!mustUseDug) {
+        registerOption(baseItems);
+      }
       for (const dug of opponentTopCards) {
         if (dug.card.rank === playedCard.rank) {
           registerOption(baseItems, dug);
@@ -383,39 +428,56 @@ export function findValidCaptureOptions(
     return options;
   }
 
-  // Numeric cards (A..10): can capture matching builds, matching loose cards, and sum combinations
+  // Numeric cards (A..10): capture matching builds, matching loose cards,
+  // and sum combinations of loose numeric cards + uncemented smaller builds
+  interface CaptureSumUnit extends RankPartitionItem {
+    readonly item: TableItem;
+  }
+
   const otherNumericLoose = table.filter(
     (item): item is TableLooseCard =>
       item.kind === 'loose' && !item.card.isFaceCard && item.card.rank !== playedCard.rank
   );
+  const openSmallBuilds = table.filter(
+    (item): item is TableBuildStack =>
+      item.kind === 'build' && !item.isCemented && item.targetValue < playedCard.rank
+  );
 
-  // Find all disjoint partitions of numeric cards summing to playedCard.rank
-  const numericPool = otherNumericLoose.map((l) => l.card);
-  const partitions = numericPool.length > 0 ? findDisjointSumPartitions(numericPool, playedCard.rank) : [];
+  const sumUnits: CaptureSumUnit[] = [
+    ...otherNumericLoose.map((item) => ({
+      id: item.id,
+      rank: item.card.rank,
+      isFaceCard: false,
+      item,
+    })),
+    ...openSmallBuilds.map((item) => ({
+      id: item.id,
+      rank: item.targetValue,
+      isFaceCard: false,
+      item,
+    })),
+  ];
 
-  const looseByCardId = new Map<string, TableLooseCard>();
-  for (const l of otherNumericLoose) {
-    looseByCardId.set(l.card.id, l);
-  }
+  const flattenPartition = (partition: readonly (readonly CaptureSumUnit[])[]): TableItem[] =>
+    partition.flatMap((group) => group.map((unit) => unit.item));
 
-  // Maximal / primary options combining matching builds + matching loose + sum partitions
-  if (matchingBuilds.length > 0 || matchingLoose.length > 0) {
-    registerOption([...matchingBuilds, ...matchingLoose]);
-  }
+  // Find all disjoint partitions of numeric loose cards & uncemented smaller builds summing to playedCard.rank
+  const partitions = sumUnits.length > 0 ? findDisjointSumPartitions(sumUnits, playedCard.rank) : [];
 
-  for (const partition of partitions) {
-    const partitionItems: TableLooseCard[] = [];
-    for (const group of partition) {
-      for (const c of group) {
-        const item = looseByCardId.get(c.id);
-        if (item) partitionItems.push(item);
-      }
+  if (!mustUseDug) {
+    // Maximal / primary options combining matching builds + matching loose + sum partitions
+    if (matchingBuilds.length > 0 || matchingLoose.length > 0) {
+      registerOption([...matchingBuilds, ...matchingLoose]);
     }
-    // With all matching builds and matching loose cards (standard full capture)
-    registerOption([...matchingBuilds, ...matchingLoose, ...partitionItems]);
-    // Pure partition capture (if player only clicks a specific loose combo and no builds)
-    if (matchingBuilds.length === 0 && matchingLoose.length === 0) {
-      registerOption(partitionItems);
+
+    for (const partition of partitions) {
+      const partitionItems = flattenPartition(partition);
+      // With all matching builds and matching loose cards (standard full capture)
+      registerOption([...matchingBuilds, ...matchingLoose, ...partitionItems]);
+      // Pure partition capture (if player only clicks a specific combo and no matching builds/loose)
+      if (matchingBuilds.length === 0 && matchingLoose.length === 0) {
+        registerOption(partitionItems);
+      }
     }
   }
 
@@ -428,13 +490,7 @@ export function findValidCaptureOptions(
         registerOption([...matchingBuilds, ...matchingLoose], dug);
       }
       for (const partition of partitions) {
-        const partitionItems: TableLooseCard[] = [];
-        for (const group of partition) {
-          for (const c of group) {
-            const item = looseByCardId.get(c.id);
-            if (item) partitionItems.push(item);
-          }
-        }
+        const partitionItems = flattenPartition(partition);
         registerOption([...matchingBuilds, ...matchingLoose, ...partitionItems], dug);
         if (matchingBuilds.length === 0 && matchingLoose.length === 0) {
           registerOption(partitionItems, dug);
@@ -442,30 +498,21 @@ export function findValidCaptureOptions(
       }
     } else if (dug.card.rank < playedCard.rank) {
       const needed = playedCard.rank - dug.card.rank;
-      const partnerSubsets = findLooseSubsetsSummingTo(otherNumericLoose, needed);
-      for (const partnerSubset of partnerSubsets) {
-        const partnerIds = new Set(partnerSubset.map((s) => s.id));
-        const remainingOther = otherNumericLoose.filter((s) => !partnerIds.has(s.id));
+      const partnerSubsets = findRankUnitSubsetsSummingTo(sumUnits, needed);
+      for (const partnerUnits of partnerSubsets) {
+        const partnerIds = new Set(partnerUnits.map((s) => s.id));
+        const partnerItems = partnerUnits.map((s) => s.item);
+        const remainingUnits = sumUnits.filter((s) => !partnerIds.has(s.id));
 
-        registerOption([...matchingBuilds, ...matchingLoose, ...partnerSubset], dug);
+        registerOption([...matchingBuilds, ...matchingLoose, ...partnerItems], dug);
 
         const remPartitions =
-          remainingOther.length > 0
-            ? findDisjointSumPartitions(
-                remainingOther.map((l) => l.card),
-                playedCard.rank
-              )
+          remainingUnits.length > 0
+            ? findDisjointSumPartitions(remainingUnits, playedCard.rank)
             : [];
         for (const partition of remPartitions) {
-          const partitionItems: TableLooseCard[] = [];
-          for (const group of partition) {
-            for (const c of group) {
-              const item = looseByCardId.get(c.id);
-              if (item) partitionItems.push(item);
-            }
-          }
           registerOption(
-            [...matchingBuilds, ...matchingLoose, ...partnerSubset, ...partitionItems],
+            [...matchingBuilds, ...matchingLoose, ...partnerItems, ...flattenPartition(partition)],
             dug
           );
         }
@@ -488,7 +535,8 @@ export function validateCaptureSelection(
   capturedItemIds: readonly string[],
   seat: number,
   players: readonly PlayerCapturedSnapshot[] = [],
-  dugCapturedFromSeat?: number | null
+  dugCapturedFromSeat?: number | null,
+  activeDugCard: ActiveDugCardInput | null = null
 ): { valid: boolean; reason?: string } {
   if (capturedItemIds.length === 0) {
     return { valid: false, reason: 'Select at least one card or build to capture.' };
@@ -506,7 +554,15 @@ export function validateCaptureSelection(
   }
 
   let dugCard: Card | null = null;
-  if (dugCapturedFromSeat !== undefined && dugCapturedFromSeat !== null) {
+  if (activeDugCard) {
+    if (dugCapturedFromSeat !== activeDugCard.sourceSeat) {
+      return {
+        valid: false,
+        reason: 'You must capture using the card you pulled from your opponent.',
+      };
+    }
+    dugCard = activeDugCard.card;
+  } else if (dugCapturedFromSeat !== undefined && dugCapturedFromSeat !== null) {
     if (dugCapturedFromSeat === seat) {
       return { valid: false, reason: 'Cannot dig your own captured pile.' };
     }
@@ -536,18 +592,31 @@ export function validateCaptureSelection(
     return { valid: true };
   }
 
-  const nonMatchingLoose: Card[] = [];
+  const nonMatchingUnits: { rank: number; isFaceCard: boolean }[] = [];
   for (const item of selectedItems) {
     if (item.kind === 'build') {
-      if (item.targetValue !== playedCard.rank) {
-        return { valid: false, reason: `Build value ${item.targetValue} does not match ${playedCard.rank}.` };
+      if (item.targetValue === playedCard.rank) {
+        continue;
       }
+      if (item.isCemented) {
+        return {
+          valid: false,
+          reason: `Build value ${item.targetValue} is locked and does not match ${playedCard.rank}.`,
+        };
+      }
+      if (item.targetValue > playedCard.rank) {
+        return {
+          valid: false,
+          reason: `Build value ${item.targetValue} does not match ${playedCard.rank}.`,
+        };
+      }
+      nonMatchingUnits.push({ rank: item.targetValue, isFaceCard: false });
     } else {
       if (item.card.isFaceCard) {
         return { valid: false, reason: 'Numeric cards cannot capture face cards.' };
       }
       if (item.card.rank !== playedCard.rank) {
-        nonMatchingLoose.push(item.card);
+        nonMatchingUnits.push({ rank: item.card.rank, isFaceCard: false });
       }
     }
   }
@@ -557,12 +626,12 @@ export function validateCaptureSelection(
       return { valid: false, reason: 'Numeric cards cannot capture face cards.' };
     }
     if (dugCard.rank !== playedCard.rank) {
-      nonMatchingLoose.push(dugCard);
+      nonMatchingUnits.push({ rank: dugCard.rank, isFaceCard: false });
     }
   }
 
-  if (nonMatchingLoose.length > 0) {
-    const partition = canExactPartitionIntoSums(nonMatchingLoose, playedCard.rank);
+  if (nonMatchingUnits.length > 0) {
+    const partition = canExactPartitionIntoSums(nonMatchingUnits, playedCard.rank);
     if (!partition) {
       return {
         valid: false,
@@ -582,7 +651,8 @@ export function findValidBuildOptions(
   hand: readonly Card[],
   table: readonly TableItem[],
   seat: number,
-  players: readonly PlayerCapturedSnapshot[] = []
+  players: readonly PlayerCapturedSnapshot[] = [],
+  activeDugCard: ActiveDugCardInput | null = null
 ): BuildOption[] {
   if (playedCard.isFaceCard) return [];
 
@@ -599,7 +669,8 @@ export function findValidBuildOptions(
   const buildsOnTable = table.filter(
     (item): item is TableBuildStack => item.kind === 'build'
   );
-  const opponentTopCards = getOpponentTopCapturedCards(players, seat);
+  const opponentTopCards = getAvailableDugCards(players, seat, activeDugCard);
+  const mustUseDug = Boolean(activeDugCard);
 
   const options: BuildOption[] = [];
   const seenOptionKeys = new Set<string>();
@@ -613,19 +684,15 @@ export function findValidBuildOptions(
     components: Card[][],
     dugEntry?: { seat: number; card: Card }
   ) => {
+    if (mustUseDug && (!dugEntry || dugEntry.seat !== activeDugCard?.sourceSeat)) {
+      return;
+    }
     const targetIds = targetItems.map((it) => it.id).sort();
     const dugSeat = dugEntry ? dugEntry.seat : null;
     const key = `${buildMode}:${targetValue}:${targetIds.join(',')}:dig:${dugSeat ?? 'none'}`;
     if (seenOptionKeys.has(key)) return;
 
-    const allCards = [playedCard];
-    if (dugEntry) {
-      allCards.push(dugEntry.card);
-    }
-    for (const it of targetItems) {
-      if (it.kind === 'loose') allCards.push(it.card);
-      else allCards.push(...it.cards);
-    }
+    const allCards = components.flat();
 
     const simulatedBuild: TableBuildStack = {
       kind: 'build',
@@ -697,21 +764,30 @@ export function findValidBuildOptions(
     // 1. Building on loose cards only (no existing build)
     for (const subset of looseSubsets) {
       if (subset.length === 0) continue;
-      const cardsInBuild = [playedCard, ...subset.map((s) => s.card)];
+      const subsetCards = subset.map((s) => s.card);
+      const cardsInBuild = [playedCard, ...subsetCards];
       const sum = cardsInBuild.reduce((acc, c) => acc + c.rank, 0);
 
       // Case 1A: Single fresh open build (sum === targetValue, targetValue >= 2)
-      if (sum === targetValue && targetValue >= 2) {
-        tryRegisterBuild(subset, targetValue, 'CREATE_OPEN', false, [cardsInBuild]);
+      if (!mustUseDug && sum === targetValue && targetValue >= 2) {
+        tryRegisterBuild(subset, targetValue, 'CREATE_OPEN', false, [
+          sortComponentDesc(cardsInBuild),
+        ]);
       }
 
       // Case 1B: Multiple groups summing to targetValue -> immediately Cemented!
       // e.g. playing 6 onto loose 6 -> [[6], [6]] (Cemented 6)
-      // or playing 2 onto loose 5 + loose 7 -> [[2, 5], [7]] (Cemented 7)
-      if (sum >= targetValue * 2 && sum % targetValue === 0) {
+      // or playing 2 onto loose 5 + loose 7 -> [[7], [5, 2]] (Cemented 7)
+      if (!mustUseDug && sum >= targetValue * 2 && sum % targetValue === 0) {
         const partition = canExactPartitionIntoSums(cardsInBuild, targetValue);
         if (partition && partition.length >= 2) {
-          tryRegisterBuild(subset, targetValue, 'CEMENT', true, partition);
+          tryRegisterBuild(
+            subset,
+            targetValue,
+            'CEMENT',
+            true,
+            partition.map(sortComponentDesc)
+          );
         }
       }
 
@@ -719,7 +795,7 @@ export function findValidBuildOptions(
       if (subset.some((s) => s.card.rank === targetValue)) {
         for (const dug of opponentTopCards) {
           if (dug.card.isFaceCard) continue;
-          const dugBuildCards = [playedCard, dug.card, ...subset.map((s) => s.card)];
+          const dugBuildCards = [playedCard, dug.card, ...subsetCards];
           const dugSum = dugBuildCards.reduce((acc, c) => acc + c.rank, 0);
           if (dugSum >= targetValue * 2 && dugSum % targetValue === 0) {
             const partition = canExactPartitionIntoSums(dugBuildCards, targetValue);
@@ -728,7 +804,14 @@ export function findValidBuildOptions(
               partition.length >= 2 &&
               partitionContainsPlayedAndDugTogether(partition, playedCard, dug.card, targetValue)
             ) {
-              tryRegisterBuild(subset, targetValue, 'CEMENT', true, partition, dug);
+              tryRegisterBuild(
+                subset,
+                targetValue,
+                'CEMENT',
+                true,
+                partition.map(sortComponentDesc),
+                dug
+              );
             }
           }
         }
@@ -739,27 +822,32 @@ export function findValidBuildOptions(
     for (const existingBuild of buildsOnTable) {
       // 2A: Cementing an existing build of the SAME targetValue (works on open OR already cemented builds)
       if (existingBuild.targetValue === targetValue) {
+        const baseComponents = existingBuild.components.map((g) => g.slice());
         for (const subset of looseSubsets) {
-          const addedCards = [playedCard, ...subset.map((s) => s.card)];
-          const addedPartition = canExactPartitionIntoSums(addedCards, targetValue);
-          if (addedPartition && addedPartition.length >= 1) {
-            const newComponents = [
-              ...existingBuild.components.map((g) => g.slice()),
-              ...addedPartition,
-            ];
-            tryRegisterBuild(
-              [existingBuild, ...subset],
-              targetValue,
-              'CEMENT',
-              true,
-              newComponents
-            );
+          const subsetCards = subset.map((s) => s.card);
+
+          if (!mustUseDug) {
+            const addedCards = [playedCard, ...subsetCards];
+            const addedPartition = canExactPartitionIntoSums(addedCards, targetValue);
+            if (addedPartition && addedPartition.length >= 1) {
+              const newComponents = [
+                ...baseComponents,
+                ...addedPartition.map(sortComponentDesc),
+              ];
+              tryRegisterBuild(
+                [existingBuild, ...subset],
+                targetValue,
+                'CEMENT',
+                true,
+                newComponents
+              );
+            }
           }
 
           // Dig Case B2: Reinforce/cement existing build of `targetValue` using playedCard + dug top card (+ optional loose)
           for (const dug of opponentTopCards) {
             if (dug.card.isFaceCard) continue;
-            const dugAddedCards = [playedCard, dug.card, ...subset.map((s) => s.card)];
+            const dugAddedCards = [playedCard, dug.card, ...subsetCards];
             const dugPartition = canExactPartitionIntoSums(dugAddedCards, targetValue);
             if (
               dugPartition &&
@@ -767,8 +855,8 @@ export function findValidBuildOptions(
               partitionContainsPlayedAndDugTogether(dugPartition, playedCard, dug.card, targetValue)
             ) {
               const newComponents = [
-                ...existingBuild.components.map((g) => g.slice()),
-                ...dugPartition,
+                ...baseComponents,
+                ...dugPartition.map(sortComponentDesc),
               ];
               tryRegisterBuild(
                 [existingBuild, ...subset],
@@ -781,19 +869,123 @@ export function findValidBuildOptions(
             }
           }
         }
+
+        // Rule A: Merge another uncemented build on the table + playedCard (+ loose / dug) into player's owned build
+        if (existingBuild.ownerSeat === seat) {
+          for (const otherBuild of buildsOnTable) {
+            if (otherBuild.id === existingBuild.id || otherBuild.isCemented) continue;
+
+            if (otherBuild.targetValue < targetValue) {
+              for (const subset of looseSubsets) {
+                const subsetCards = subset.map((s) => s.card);
+                const subsetSum = subsetCards.reduce((acc, c) => acc + c.rank, 0);
+
+                if (!mustUseDug && otherBuild.targetValue + playedCard.rank + subsetSum === targetValue) {
+                  const mergedGroup = sortComponentDesc([
+                    ...otherBuild.cards,
+                    playedCard,
+                    ...subsetCards,
+                  ]);
+                  tryRegisterBuild(
+                    [existingBuild, otherBuild, ...subset],
+                    targetValue,
+                    'CEMENT',
+                    true,
+                    [...baseComponents, mergedGroup]
+                  );
+                }
+
+                for (const dug of opponentTopCards) {
+                  if (dug.card.isFaceCard) continue;
+                  if (
+                    otherBuild.targetValue + playedCard.rank + dug.card.rank + subsetSum ===
+                    targetValue
+                  ) {
+                    const mergedGroup = sortComponentDesc([
+                      ...otherBuild.cards,
+                      playedCard,
+                      dug.card,
+                      ...subsetCards,
+                    ]);
+                    tryRegisterBuild(
+                      [existingBuild, otherBuild, ...subset],
+                      targetValue,
+                      'CEMENT',
+                      true,
+                      [...baseComponents, mergedGroup],
+                      dug
+                    );
+                  }
+                }
+              }
+            } else if (otherBuild.targetValue === targetValue) {
+              const otherComponents = otherBuild.components.map(sortComponentDesc);
+              for (const subset of looseSubsets) {
+                const subsetCards = subset.map((s) => s.card);
+
+                if (!mustUseDug) {
+                  const addedCards = [playedCard, ...subsetCards];
+                  const addedPartition = canExactPartitionIntoSums(addedCards, targetValue);
+                  if (addedPartition && addedPartition.length >= 1) {
+                    tryRegisterBuild(
+                      [existingBuild, otherBuild, ...subset],
+                      targetValue,
+                      'CEMENT',
+                      true,
+                      [
+                        ...baseComponents,
+                        ...otherComponents,
+                        ...addedPartition.map(sortComponentDesc),
+                      ]
+                    );
+                  }
+                }
+
+                for (const dug of opponentTopCards) {
+                  if (dug.card.isFaceCard) continue;
+                  const dugAddedCards = [playedCard, dug.card, ...subsetCards];
+                  const dugPartition = canExactPartitionIntoSums(dugAddedCards, targetValue);
+                  if (
+                    dugPartition &&
+                    dugPartition.length >= 1 &&
+                    partitionContainsPlayedAndDugTogether(
+                      dugPartition,
+                      playedCard,
+                      dug.card,
+                      targetValue
+                    )
+                  ) {
+                    tryRegisterBuild(
+                      [existingBuild, otherBuild, ...subset],
+                      targetValue,
+                      'CEMENT',
+                      true,
+                      [
+                        ...baseComponents,
+                        ...otherComponents,
+                        ...dugPartition.map(sortComponentDesc),
+                      ],
+                      dug
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
       }
 
       // 2B: Raising an OPEN (non-cemented) build to a higher targetValue (<= 10)
-      if (!existingBuild.isCemented && targetValue > existingBuild.targetValue && targetValue <= 10) {
+      if (!mustUseDug && !existingBuild.isCemented && targetValue > existingBuild.targetValue && targetValue <= 10) {
         for (const subset of looseSubsets) {
           const addedSum =
             playedCard.rank + subset.reduce((acc, s) => acc + s.card.rank, 0);
           if (existingBuild.targetValue + addedSum === targetValue) {
-            const singleGroup = [
+            const singleGroup = sortComponentDesc([
               ...existingBuild.cards,
               playedCard,
               ...subset.map((s) => s.card),
-            ];
+            ]);
             tryRegisterBuild(
               [existingBuild, ...subset],
               targetValue,
@@ -816,7 +1008,8 @@ export function findValidBuildOptions(
 export function findValidTableDigMerges(
   table: readonly TableItem[],
   players: readonly PlayerCapturedSnapshot[],
-  seat: number
+  seat: number,
+  activeDugCard: ActiveDugCardInput | null = null
 ): TableDigMergeOption[] {
   const ownedBuilds = table.filter(
     (item): item is TableBuildStack => item.kind === 'build' && item.ownerSeat === seat
@@ -828,8 +1021,15 @@ export function findValidTableDigMerges(
   );
   if (looseNumeric.length === 0) return [];
 
-  const opponentTopCards = getOpponentTopCapturedCards(players, seat);
+  const opponentTopCards = getAvailableDugCards(players, seat, activeDugCard);
   if (opponentTopCards.length === 0) return [];
+
+  const looseUnits = looseNumeric.map((item) => ({
+    id: item.id,
+    rank: item.card.rank,
+    isFaceCard: false,
+    item,
+  }));
 
   const options: TableDigMergeOption[] = [];
   const seenKeys = new Set<string>();
@@ -838,8 +1038,9 @@ export function findValidTableDigMerges(
     for (const dug of opponentTopCards) {
       if (dug.card.isFaceCard || dug.card.rank >= build.targetValue) continue;
       const needed = build.targetValue - dug.card.rank;
-      const subsets = findLooseSubsetsSummingTo(looseNumeric, needed);
-      for (const subset of subsets) {
+      const subsets = findRankUnitSubsetsSummingTo(looseUnits, needed);
+      for (const unitSubset of subsets) {
+        const subset = unitSubset.map((u) => u.item);
         const targetItemIds = subset.map((it) => it.id).sort();
         const key = `${build.id}|dig:${dug.seat}|${targetItemIds.join(',')}`;
         if (seenKeys.has(key)) continue;
@@ -861,6 +1062,142 @@ export function findValidTableDigMerges(
   }
 
   return options;
+}
+
+/**
+ * Finds all subsets of loose numeric table cards (1..4 cards) summing to `ownedBuild.targetValue`
+ * that can be moved directly into `seat`'s active build (`MERGE_LOOSE_TO_BUILD`).
+ */
+export function findValidLooseToBuildMerges(
+  table: readonly TableItem[],
+  seat: number
+): LooseBuildMergeOption[] {
+  const ownedBuilds = table.filter(
+    (item): item is TableBuildStack => item.kind === 'build' && item.ownerSeat === seat
+  );
+  if (ownedBuilds.length === 0) return [];
+
+  const looseNumeric = table.filter(
+    (item): item is TableLooseCard => item.kind === 'loose' && !item.card.isFaceCard
+  );
+  if (looseNumeric.length === 0) return [];
+
+  const looseUnits = looseNumeric.map((item) => ({
+    id: item.id,
+    rank: item.card.rank,
+    isFaceCard: false,
+    item,
+  }));
+
+  const options: LooseBuildMergeOption[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const build of ownedBuilds) {
+    const subsets = findRankUnitSubsetsSummingTo(looseUnits, build.targetValue, 4);
+    for (const unitSubset of subsets) {
+      const subset = unitSubset.map((u) => u.item);
+      const targetItemIds = subset.map((it) => it.id).sort();
+      const key = `${build.id}|${targetItemIds.join(',')}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+
+      const looseLabels = subset.map((it) => it.card.label).join(' + ');
+      options.push({
+        id: `loose-merge:${build.id}:${targetItemIds.join(',')}`,
+        buildId: build.id,
+        targetValue: build.targetValue,
+        targetItemIds,
+        targetItems: subset,
+        description: `${looseLabels} into Build ${formatBuildRank(build.targetValue)}`,
+      });
+    }
+  }
+
+  return options;
+}
+
+/**
+ * Checks whether pulling `sourceSeat`'s top captured card has at least one legal
+ * DIG_TABLE_TO_BUILD, CAPTURE (with `dugCapturedFromSeat === sourceSeat`), or BUILD
+ * (with `dugCapturedFromSeat === sourceSeat`) available in `seat`'s hand
+ * (and involving `targetItemId` if provided).
+ */
+export function canPullOpponentTopCard(
+  sourceSeat: number,
+  hand: readonly Card[],
+  table: readonly TableItem[],
+  seat: number,
+  players: readonly PlayerCapturedSnapshot[],
+  isFinalDealCard: boolean,
+  targetItemId?: string | null
+): { valid: boolean; reason?: string } {
+  if (sourceSeat === seat) {
+    return { valid: false, reason: 'Cannot dig your own captured pile.' };
+  }
+  const sourcePlayer = players.find((p) => p.seat === sourceSeat);
+  if (!sourcePlayer || sourcePlayer.capturedCards.length === 0) {
+    return { valid: false, reason: 'Target opponent has no top captured card to pull.' };
+  }
+
+  const dugCard = sourcePlayer.capturedCards[sourcePlayer.capturedCards.length - 1];
+  const activeDug: ActiveDugCardInput = { sourceSeat, card: dugCard };
+
+  if (targetItemId !== undefined && targetItemId !== null) {
+    const targetExists = table.some((it) => it.id === targetItemId);
+    if (!targetExists) {
+      return { valid: false, reason: 'Selected table card or build no longer exists.' };
+    }
+  }
+
+  const digMerges = findValidTableDigMerges(table, players, seat, activeDug);
+  if (
+    digMerges.some(
+      (m) =>
+        m.dugFromSeat === sourceSeat &&
+        (!targetItemId || m.buildId === targetItemId || m.targetItemIds.includes(targetItemId))
+    )
+  ) {
+    return { valid: true };
+  }
+
+  for (const card of hand) {
+    const captures = findValidCaptureOptions(
+      card,
+      hand,
+      table,
+      seat,
+      isFinalDealCard,
+      players,
+      activeDug
+    );
+    if (
+      captures.some(
+        (cap) =>
+          cap.dugCapturedFromSeat === sourceSeat &&
+          (!targetItemId || cap.capturedItemIds.includes(targetItemId))
+      )
+    ) {
+      return { valid: true };
+    }
+
+    const builds = findValidBuildOptions(card, hand, table, seat, players, activeDug);
+    if (
+      builds.some(
+        (bld) =>
+          bld.dugCapturedFromSeat === sourceSeat &&
+          (!targetItemId || bld.targetItemIds.includes(targetItemId))
+      )
+    ) {
+      return { valid: true };
+    }
+  }
+
+  return {
+    valid: false,
+    reason: targetItemId
+      ? `No legal capture or build in your hand can use ${dugCard.label} with that table item.`
+      : `You do not hold the required card to capture or build with ${dugCard.label}.`,
+  };
 }
 
 export function formatBuildRank(value: number): string {
@@ -954,6 +1291,13 @@ export function canTrailCard(
   seat: number,
   options?: TrailCheckOptions
 ): { valid: boolean; reason?: string } {
+  if (options?.activeDugCard) {
+    return {
+      valid: false,
+      reason: 'You must finish playing or capturing the card you took from your opponent.',
+    };
+  }
+
   const remainingHand = hand.filter((c) => c.id !== playedCard.id);
   if (!canPlayerCoverOwnedBuilds(remainingHand, table, seat)) {
     return {

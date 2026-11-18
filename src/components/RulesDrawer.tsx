@@ -177,32 +177,64 @@ export function RulesDrawer({ isOpen, sweepsEnabled, onClose }: RulesDrawerProps
                 Building &amp; Cementing
               </h3>
             </div>
-            <div className="space-y-2 text-[11.5px] text-stone-300/90">
-              <p className="[text-wrap:pretty]">
-                <strong className="text-[#f4efe6]">Possession Rule:</strong> You must hold a numeric
-                card matching the build&apos;s target value in your hand to create or modify it, and
-                you may never trail or play away your last cover card while your build sits on the
-                table.
-              </p>
-              <p className="[text-wrap:pretty]">
-                <strong className="text-sky-200">Fresh Open Build:</strong> A single sum group
-                (such as <span className="font-mono-num">3+4=7</span>). Any player holding the
-                higher rank may raise it upward (up to <span className="font-mono-num">10</span>) by
-                adding cards.
-              </p>
-              <p className="flex items-start gap-1.5 [text-wrap:pretty]">
-                <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
-                <span>
-                  <strong className="text-amber-200">Cemented Build (LOCKED):</strong> Pairing
-                  multiple disjoint groups of the same target value (such as{' '}
-                  <span className="font-mono-num">6</span> onto{' '}
-                  <span className="font-mono-num">6</span>, or adding{' '}
-                  <span className="font-mono-num">2+5</span> to a{' '}
-                  <span className="font-mono-num">7</span>) locks the target permanently. It can no
-                  longer be raised—only reinforced at the same value or captured.
+            <ul className="space-y-2 text-[11.5px] text-stone-300/90">
+              <li className="flex items-start gap-2">
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#c89d54]" />
+                <span className="[text-wrap:pretty]">
+                  <strong className="text-[#f4efe6]">Possession Rule:</strong> You must hold a
+                  card matching the build&apos;s target number in your hand to create or change it,
+                  and you cannot play away your last matching card while your build is on the table.
                 </span>
-              </p>
-            </div>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-sky-300" />
+                <span className="[text-wrap:pretty]">
+                  <strong className="text-sky-200">Fresh Open Build:</strong> A single sum group
+                  (such as <span className="font-mono-num">3+4=7</span>). Any player holding the
+                  higher number can raise it upward (up to <span className="font-mono-num">10</span>)
+                  by adding cards.
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
+                <span className="[text-wrap:pretty]">
+                  <strong className="text-amber-200">Cemented Build (LOCKED):</strong> Pairing two
+                  groups of the same target number (such as <span className="font-mono-num">6</span>{' '}
+                  onto <span className="font-mono-num">6</span>, or adding{' '}
+                  <span className="font-mono-num">2+5</span> to a{' '}
+                  <span className="font-mono-num">7</span>) locks that number permanently. It can no
+                  longer be raised—only added to at the same value or captured.
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300" />
+                <span className="[text-wrap:pretty]">
+                  <strong className="text-emerald-200">
+                    Moving Loose Table Cards Into Your Build:
+                  </strong>{' '}
+                  If you already own a build (like <span className="font-mono-num">10</span>) and
+                  there are matching loose cards on the table (like{' '}
+                  <span className="font-mono-num">4</span> and{' '}
+                  <span className="font-mono-num">6</span>), you can drag{' '}
+                  <span className="font-mono-num">4</span> onto{' '}
+                  <span className="font-mono-num">6</span> and move them into your{' '}
+                  <span className="font-mono-num">10</span> build—your turn stays active so you can
+                  still play a card from your hand.
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#c89d54]" />
+                <span className="[text-wrap:pretty]">
+                  <strong className="text-[#f4efe6]">Combining Uncemented Builds:</strong> If an
+                  opponent has an unlocked build (like <span className="font-mono-num">3</span>) and
+                  you own a <span className="font-mono-num">10</span> build, you can play{' '}
+                  <span className="font-mono-num">7</span> onto their{' '}
+                  <span className="font-mono-num">3</span> and merge it into your{' '}
+                  <span className="font-mono-num">10</span> build (or add loose cards onto an
+                  opponent&apos;s unlocked build to capture it).
+                </span>
+              </li>
+            </ul>
           </section>
 
           {/* 4. Tabletop Controls & Special Moves */}
@@ -213,29 +245,40 @@ export function RulesDrawer({ isOpen, sweepsEnabled, onClose }: RulesDrawerProps
                 Tabletop Controls &amp; Special Moves
               </h3>
             </div>
-            <div className="space-y-2.5 text-[11.5px] text-stone-300/90">
-              <p className="[text-wrap:pretty]">
-                <strong className="text-[#f4efe6]">Peeking Builds:</strong> Tap the{' '}
-                <span className="font-semibold text-[#f3dfb7]">eye icon</span> on any build stack
-                to fan out and see all cards underneath. Locked builds show a{' '}
-                <span className="font-semibold text-amber-200">lock icon</span> next to their
-                number.
-              </p>
-              <p className="[text-wrap:pretty]">
-                <strong className="text-emerald-200">Digging Opponent&apos;s Captured Deck:</strong>{' '}
-                Only the top-most face-up captured card of each opponent&apos;s pile is visible.
-                When legal, you can capture that exposed top card directly or dig it onto a matching
-                table number or your own active build.
-              </p>
-              <p className="flex items-start gap-1.5 [text-wrap:pretty]">
+            <ul className="space-y-2.5 text-[11.5px] text-stone-300/90">
+              <li className="flex items-start gap-2">
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-[#e6c588]" />
+                <span className="[text-wrap:pretty]">
+                  <strong className="text-[#f4efe6]">
+                    Tap-to-Rotate Peek &amp; Card Layering:
+                  </strong>{' '}
+                  In each build step, smaller numbers sit on top of larger numbers. Tap any build
+                  stack to rotate its cards open one layer at a time and see what is underneath.
+                  Locked builds show a <span className="font-semibold text-amber-200">lock icon</span>{' '}
+                  next to their number.
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300" />
+                <span className="[text-wrap:pretty]">
+                  <strong className="text-emerald-200">
+                    Moving Opponent&apos;s Top Card (No Take-Backs):
+                  </strong>{' '}
+                  Only the top face-up card on an opponent&apos;s captured pile is visible. You can
+                  drag that top card onto a matching table card or build if you hold the card needed
+                  to finish the play—once pulled off their deck, it cannot be returned back to their
+                  deck.
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
                 <Timer className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#c89d54]" />
-                <span>
+                <span className="[text-wrap:pretty]">
                   <strong className="text-[#f4efe6]">4-Second Cancel Timer:</strong> After playing a
                   move, you have <span className="font-mono-num font-semibold text-white">4</span>{' '}
                   seconds to cancel and undo it before the next player acts.
                 </span>
-              </p>
-            </div>
+              </li>
+            </ul>
           </section>
 
           {/* 5. Scoring Table */}

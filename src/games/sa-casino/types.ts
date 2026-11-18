@@ -76,10 +76,16 @@ export interface DealScoreBreakdown {
   readonly winningTeamIds: readonly number[];
 }
 
+export interface ActiveDugCard {
+  readonly sourceSeat: number;
+  readonly card: Card;
+  readonly attachedTargetId: string | null;
+}
+
 export interface LastActionSummary {
   readonly seat: number;
   readonly playerName: string;
-  readonly actionType: 'TRAIL' | 'CAPTURE' | 'BUILD' | 'CEMENT' | 'DEAL';
+  readonly actionType: 'TRAIL' | 'CAPTURE' | 'BUILD' | 'CEMENT' | 'DIG' | 'DEAL';
   readonly description: string;
   readonly swept: boolean;
   readonly playedCard: Card | null;
@@ -114,6 +120,7 @@ export interface SACasinoState {
   readonly matchScores: Record<number, number>;
   readonly phase: GamePhase;
   readonly turnCount: number;
+  readonly activeDugCard: ActiveDugCard | null;
   readonly lastActionSummary: LastActionSummary | null;
   readonly dealScoreBreakdown: DealScoreBreakdown | null;
 }
@@ -137,6 +144,7 @@ export interface SACasinoPlayerView {
   readonly matchScores: Record<number, number>;
   readonly phase: GamePhase;
   readonly turnCount: number;
+  readonly activeDugCard: ActiveDugCard | null;
   readonly lastActionSummary: LastActionSummary | null;
   readonly dealScoreBreakdown: DealScoreBreakdown | null;
 }
@@ -165,6 +173,16 @@ export interface DigTableToBuildPayload {
   readonly dugFromSeat: number;
 }
 
+export interface MergeLooseToBuildPayload {
+  readonly buildId: string;
+  readonly targetItemIds: readonly string[];
+}
+
+export interface PullOpponentTopCardPayload {
+  readonly sourceSeat: number;
+  readonly targetItemId?: string | null;
+}
+
 export interface DealNextRoundPayload {
   readonly round: 2;
 }
@@ -174,6 +192,8 @@ export type SACasinoAction =
   | GameAction<'CAPTURE', CapturePayload>
   | GameAction<'BUILD', BuildPayload>
   | GameAction<'DIG_TABLE_TO_BUILD', DigTableToBuildPayload>
+  | GameAction<'MERGE_LOOSE_TO_BUILD', MergeLooseToBuildPayload>
+  | GameAction<'PULL_OPPONENT_TOP_CARD', PullOpponentTopCardPayload>
   | GameAction<'DEAL_NEXT_ROUND', DealNextRoundPayload>;
 
 export interface CaptureOption {
@@ -207,6 +227,15 @@ export interface TableDigMergeOption {
   readonly targetItems: readonly TableLooseCard[];
   readonly dugFromSeat: number;
   readonly dugCard: Card;
+  readonly description: string;
+}
+
+export interface LooseBuildMergeOption {
+  readonly id: string;
+  readonly buildId: string;
+  readonly targetValue: number;
+  readonly targetItemIds: readonly string[];
+  readonly targetItems: readonly TableLooseCard[];
   readonly description: string;
 }
 

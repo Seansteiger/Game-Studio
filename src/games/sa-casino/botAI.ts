@@ -3,6 +3,7 @@ import {
   canTrailCard,
   findValidBuildOptions,
   findValidCaptureOptions,
+  findValidLooseToBuildMerges,
   findValidTableDigMerges,
 } from './buildAndCaptureValidator';
 import {
@@ -161,10 +162,17 @@ export function chooseTacticalBotAction(
   const isRound1Of1v1 = playerView.mode === '1v1' && playerView.roundNumber === 1;
   const candidates: RankedCandidate[] = [];
 
+  const activeDugCard = playerView.activeDugCard ?? null;
+
   // 0. Optional Table Dig Merge into own active build (free reinforcement before playing a hand card)
-  const tableDigMerges = findValidTableDigMerges(playerView.table, playerView.players, botSeat);
+  const tableDigMerges = findValidTableDigMerges(
+    playerView.table,
+    playerView.players,
+    botSeat,
+    activeDugCard
+  );
   for (const merge of tableDigMerges) {
-    if (partnerSeat !== null && merge.dugFromSeat === partnerSeat) {
+    if (!activeDugCard && partnerSeat !== null && merge.dugFromSeat === partnerSeat) {
       continue;
     }
     let score = 115 + merge.targetItems.length * 10;
@@ -185,6 +193,31 @@ export function chooseTacticalBotAction(
     });
   }
 
+  // 0B. Optional Loose-to-Build Merge into own active build (only when no active dug card is pending)
+  if (!activeDugCard) {
+    const looseMerges = findValidLooseToBuildMerges(playerView.table, botSeat);
+    for (const merge of looseMerges) {
+      let score = 112 + merge.targetItems.length * 10;
+      for (const item of merge.targetItems) {
+        if (isBigCasino(item.card)) score += 55;
+        else if (isLittleCasino(item.card)) score += 35;
+        else if (item.card.rank === 1) score += 28;
+        if (item.card.suit === 'S') score += 9;
+      }
+      candidates.push({
+        score,
+        action: {
+          type: 'MERGE_LOOSE_TO_BUILD',
+          playerSeat: botSeat,
+          payload: {
+            buildId: merge.buildId,
+            targetItemIds: merge.targetItemIds,
+          },
+        },
+      });
+    }
+  }
+
   for (const card of hand) {
     // 1. Capture options
     const captures = findValidCaptureOptions(
@@ -193,7 +226,8 @@ export function chooseTacticalBotAction(
       playerView.table,
       botSeat,
       isFinalDealCard,
-      playerView.players
+      playerView.players,
+      activeDugCard
     );
     for (const cap of captures) {
       let score = cap.tacticalScore + 25;
@@ -237,7 +271,8 @@ export function chooseTacticalBotAction(
       hand,
       playerView.table,
       botSeat,
-      playerView.players
+      playerView.players,
+      activeDugCard
     );
     for (const bld of builds) {
       let score = scoreBuildOption(bld, card, hand, playerView, botSeat, seenCounts);
@@ -264,6 +299,7 @@ export function chooseTacticalBotAction(
     const trailCheck = canTrailCard(card, hand, playerView.table, botSeat, {
       isRound1Of1v1,
       players: playerView.players,
+      activeDugCard,
     });
     if (trailCheck.valid) {
       const danger = evaluateTrailDanger(

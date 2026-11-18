@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, Lock, RotateCcw, X } from 'lucide-react';
 import { BuildStackView } from './components/BuildStackView';
 import { CardSvg } from './components/CardSvg';
@@ -9,25 +9,32 @@ import { ScoreBreakdownModal } from './components/ScoreBreakdownModal';
 import { TableCanvas, type CaptureFlightEvent } from './components/TableCanvas';
 import { TopHudBar } from './components/TopHudBar';
 import {
+  ActiveDugCard,
   BuildOption,
   CaptureOption,
   GameMode,
+  LooseBuildMergeOption,
+  MaskedPlayerSeatState,
   SACasinoAction,
   SACasinoState,
   SACasinoVisualEvent,
   TableDigMergeOption,
   TableItem,
+  TableLooseCard,
   applySACasinoAction,
+  canPullOpponentTopCard,
   canTrailCard,
   chooseTacticalBotAction,
   createInitialSACasinoState,
   diagnoseFailedTargetPlay,
   findValidBuildOptions,
   findValidCaptureOptions,
+  findValidLooseToBuildMerges,
   findValidTableDigMerges,
   formatBuildRank,
   getPossessionLockedValues,
   getSACasinoPlayerView,
+  sortComponentDesc,
 } from './games/sa-casino';
 import {
   Card,
@@ -36,12 +43,69 @@ import {
   sharedAudioEngine,
 } from './studio/core';
 
+const DRAG_THRESHOLD_PX = 8;
+
 interface DragSession {
   card: Card;
   clientX: number;
   clientY: number;
   originX: number;
   originY: number;
+}
+
+interface TableDragSession {
+  sourceItem: TableLooseCard;
+  clientX: number;
+  clientY: number;
+  originX: number;
+  originY: number;
+}
+
+interface DigDragSession {
+  sourceSeat: number;
+  card: Card;
+  clientX: number;
+  clientY: number;
+  originX: number;
+  originY: number;
+}
+
+interface StagedTableGroup {
+  itemIds: string[];
+  anchorId: string;
+}
+
+interface StagedDragSession {
+  itemIds: string[];
+  cards: Card[];
+  clientX: number;
+  clientY: number;
+  originX: number;
+  originY: number;
+}
+
+interface AnchorCoords {
+  x: number;
+  y: number;
+}
+
+interface TableComboActionState {
+  targetItemId: string;
+  looseMerges: LooseBuildMergeOption[];
+  handCaptures: { card: Card; option: CaptureOption }[];
+  handBuilds: { card: Card; option: BuildOption }[];
+}
+
+interface TablePointerSession {
+  pointerId: number;
+  mode: 'loose' | 'staged';
+  item: TableLooseCard;
+  canDrag: boolean;
+  stagedItemIds?: string[];
+  stagedCards?: Card[];
+  startX: number;
+  startY: number;
+  hasDragged: boolean;
 }
 
 interface InlineActionState {
@@ -87,17 +151,118 @@ function nextSeed(prev?: number): number {
   return base === 0 ? 1337 : base;
 }
 
-function findTableItemIdAtPoint(clientX: number, clientY: number): string | null {
+function findTableItemIdAtPoint(
+  clientX: number,
+  clientY: number,
+  ignoreId?: string | null
+): string | null {
   if (typeof document === 'undefined' || !document.elementsFromPoint) return null;
   const elements = document.elementsFromPoint(clientX, clientY);
   for (const el of elements) {
     const target = el.closest?.('[data-table-item-id]');
     if (target) {
       const id = target.getAttribute('data-table-item-id');
-      if (id) return id;
+      if (id && id !== ignoreId) return id;
     }
   }
   return null;
+}
+
+function haveSameIdSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = a.slice().sort();
+  const sb = b.slice().sort();
+  return sa.every((id, idx) => id === sb[idx]);
+}
+
+function isNonUndoableAction(prevState: SACasinoState, action: SACasinoAction): boolean {
+  if (prevState.activeDugCard !== null) return true;
+  if (
+    action.type === 'PULL_OPPONENT_TOP_CARD' ||
+    action.type === 'DIG_TABLE_TO_BUILD' ||
+    action.type === 'MERGE_LOOSE_TO_BUILD'
+  ) {
+    return true;
+  }
+  if (
+    (action.type === 'CAPTURE' || action.type === 'BUILD') &&
+    action.payload.dugCapturedFromSeat != null
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function findComboMovesForItems(
+  requiredIds: readonly string[],
+  hand: readonly Card[],
+  table: readonly TableItem[],
+  players: readonly MaskedPlayerSeatState[],
+  isFinalDealCard: boolean,
+  activeDugCard: ActiveDugCard | null = null
+): {
+  handCaptures: { card: Card; option: CaptureOption }[];
+  handBuilds: { card: Card; option: BuildOption }[];
+} {
+  const handCaptures: { card: Card; option: CaptureOption }[] = [];
+  const handBuilds: { card: Card; option: BuildOption }[] = [];
+
+  for (const card of hand) {
+    const capOpts = findValidCaptureOptions(
+      card,
+      hand,
+      table,
+      0,
+      isFinalDealCard,
+      players,
+      activeDugCard
+    ).filter((opt) => requiredIds.every((id) => opt.capturedItemIds.includes(id)));
+
+    const nonDugCaps = capOpts.filter((opt) => opt.dugCapturedFromSeat == null);
+    const chosenCap = activeDugCard ? capOpts[0] : (nonDugCaps[0] ?? capOpts[0]);
+    if (chosenCap) {
+      handCaptures.push({ card, option: chosenCap });
+    }
+
+    const bldOpts = findValidBuildOptions(
+      card,
+      hand,
+      table,
+      0,
+      players,
+      activeDugCard
+    ).filter(
+      (opt) =>
+        (activeDugCard !== null || opt.dugCapturedFromSeat == null) &&
+        requiredIds.every((id) => opt.targetItemIds.includes(id))
+    );
+
+    if (bldOpts.length > 0) {
+      const sortedBuilds = bldOpts
+        .slice()
+        .sort(
+          (a, b) =>
+            a.targetItemIds.length - b.targetItemIds.length ||
+            Number(b.resultingCemented) - Number(a.resultingCemented)
+        );
+      const seenKey = new Set<string>();
+      for (const opt of sortedBuilds) {
+        const key = `${opt.targetValue}:${opt.buildMode}`;
+        if (seenKey.has(key)) continue;
+        seenKey.add(key);
+        handBuilds.push({ card, option: opt });
+      }
+    }
+  }
+
+  return { handCaptures, handBuilds };
+}
+
+function formatCaptureTargetSummary(option: CaptureOption): string {
+  const parts = option.capturedItems.map((it) =>
+    it.kind === 'loose' ? it.card.label : `B${formatBuildRank(it.targetValue)}`
+  );
+  return parts.join('+');
 }
 
 export function App() {
@@ -122,8 +287,19 @@ export function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  const mainRef = useRef<HTMLElement | null>(null);
+  const tablePointerRef = useRef<TablePointerSession | null>(null);
+  const suppressNextTableClickRef = useRef(false);
+
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [dragState, setDragState] = useState<DragSession | null>(null);
+  const [tableDragState, setTableDragState] = useState<TableDragSession | null>(null);
+  const [digDragState, setDigDragState] = useState<DigDragSession | null>(null);
+  const [stagedTableGroup, setStagedTableGroup] = useState<StagedTableGroup | null>(null);
+  const [stagedDragState, setStagedDragState] = useState<StagedDragSession | null>(null);
+  const [tableComboState, setTableComboState] = useState<TableComboActionState | null>(null);
+  const [dugFocusTargetId, setDugFocusTargetId] = useState<string | null>(null);
+  const [anchorCoords, setAnchorCoords] = useState<AnchorCoords | null>(null);
   const [hoveredDropTargetId, setHoveredDropTargetId] = useState<string | null>(null);
   const [inlineActionState, setInlineActionState] = useState<InlineActionState | null>(null);
   const [pendingUndo, setPendingUndo] = useState<PendingUndoState | null>(null);
@@ -203,7 +379,14 @@ export function App() {
 
       const nextState = result.state;
       const events: readonly SACasinoVisualEvent[] = result.events;
+      const nonUndoable = isNonUndoableAction(prevState, action);
       setGameState(nextState);
+      setStagedTableGroup(null);
+      setTableComboState(null);
+      if (nonUndoable) {
+        setPendingUndo(null);
+        setUndoRemainingSec(0);
+      }
 
       for (const ev of events) {
         switch (ev.type) {
@@ -269,17 +452,51 @@ export function App() {
       const ok = applyAndReact(prevState, action);
       if (ok) {
         setErrorToast(null);
-        setPendingUndo({
-          prevState,
-          label,
-          expiresAt: Date.now() + 4000,
-        });
-        setUndoRemainingSec(4);
+        if (!isNonUndoableAction(prevState, action)) {
+          setPendingUndo({
+            prevState,
+            label,
+            expiresAt: Date.now() + 4000,
+          });
+          setUndoRemainingSec(4);
+        }
       }
       return ok;
     },
     [applyAndReact]
   );
+
+  // Clear ephemeral interaction state when turn leaves Seat 0 or activeDugCard resolves
+  useEffect(() => {
+    if (!isMyTurn) {
+      tablePointerRef.current = null;
+      setTableDragState(null);
+      setDigDragState(null);
+      setStagedDragState(null);
+      setStagedTableGroup(null);
+      setTableComboState(null);
+      setInlineActionState(null);
+      setSelectedCardId(null);
+      setDugFocusTargetId(null);
+      setHoveredDropTargetId(null);
+    }
+  }, [isMyTurn]);
+
+  useEffect(() => {
+    if (viewerView.activeDugCard === null) {
+      setDugFocusTargetId(null);
+    }
+  }, [viewerView.activeDugCard]);
+
+  useEffect(() => {
+    if (!stagedTableGroup) return;
+    const allStillLoose = stagedTableGroup.itemIds.every((id) =>
+      viewerView.table.some((it) => it.kind === 'loose' && it.id === id)
+    );
+    if (!allStillLoose || stagedTableGroup.itemIds.length < 2) {
+      setStagedTableGroup(null);
+    }
+  }, [stagedTableGroup, viewerView.table]);
 
   // 4-second Cancel timer countdown & auto-expiry
   useEffect(() => {
@@ -349,8 +566,23 @@ export function App() {
 
   const tableDigMerges = useMemo(
     () =>
-      isMyTurn ? findValidTableDigMerges(viewerView.table, viewerView.players, 0) : [],
-    [isMyTurn, viewerView.table, viewerView.players]
+      isMyTurn
+        ? findValidTableDigMerges(
+            viewerView.table,
+            viewerView.players,
+            0,
+            viewerView.activeDugCard
+          )
+        : [],
+    [isMyTurn, viewerView.table, viewerView.players, viewerView.activeDugCard]
+  );
+
+  const looseBuildMerges = useMemo(
+    () =>
+      isMyTurn && viewerView.activeDugCard === null
+        ? findValidLooseToBuildMerges(viewerView.table, 0)
+        : [],
+    [isMyTurn, viewerView.activeDugCard, viewerView.table]
   );
 
   // Hand capability metadata for Seat 0
@@ -368,7 +600,8 @@ export function App() {
           viewerView.table,
           0,
           isFinalDealCard,
-          viewerView.players
+          viewerView.players,
+          viewerView.activeDugCard
         );
         if (capOpts.length > 0) {
           capturable.add(card.id);
@@ -383,7 +616,8 @@ export function App() {
           myHand,
           viewerView.table,
           0,
-          viewerView.players
+          viewerView.players,
+          viewerView.activeDugCard
         );
         if (bldOpts.length > 0) {
           buildable.add(card.id);
@@ -402,7 +636,7 @@ export function App() {
       buildableCardIds: buildable,
       handDiggableSeats: digSeats,
     };
-  }, [myHand, viewerView.table, viewerView.players, isMyTurn, isFinalDealCard]);
+  }, [myHand, viewerView.table, viewerView.players, viewerView.activeDugCard, isMyTurn, isFinalDealCard]);
 
   // Options for the currently dragged or selected card (for table highlights & inline pills)
   const inspectedHandCard = useMemo(() => {
@@ -428,18 +662,21 @@ export function App() {
       viewerView.table,
       0,
       isFinalDealCard,
-      viewerView.players
+      viewerView.players,
+      viewerView.activeDugCard
     );
     const buildOptions = findValidBuildOptions(
       inspectedHandCard,
       myHand,
       viewerView.table,
       0,
-      viewerView.players
+      viewerView.players,
+      viewerView.activeDugCard
     );
     const trail = canTrailCard(inspectedHandCard, myHand, viewerView.table, 0, {
       isRound1Of1v1: viewerView.mode === '1v1' && viewerView.roundNumber === 1,
       players: viewerView.players,
+      activeDugCard: viewerView.activeDugCard,
     });
 
     return {
@@ -454,6 +691,7 @@ export function App() {
     myHand,
     viewerView.table,
     viewerView.players,
+    viewerView.activeDugCard,
     viewerView.mode,
     viewerView.roundNumber,
     isFinalDealCard,
@@ -462,26 +700,196 @@ export function App() {
   // Table target highlight lookup while dragging or picking
   const tableHighlightMap = useMemo(() => {
     const map = new Map<string, 'capture' | 'build' | 'cement'>();
-    if (!inspectedHandCard || !isMyTurn) return map;
+    if (!isMyTurn) return map;
 
-    for (const opt of activeCardMoves.captureOptions) {
-      for (const id of opt.capturedItemIds) {
-        map.set(id, 'capture');
+    if (tableDragState) {
+      const source = tableDragState.sourceItem;
+      const stagedIds = stagedTableGroup?.itemIds ?? [];
+      const stagedSum = stagedTableGroup
+        ? viewerView.table
+            .filter((it): it is TableLooseCard => it.kind === 'loose' && stagedIds.includes(it.id))
+            .reduce((acc, it) => acc + it.card.rank, 0)
+        : 0;
+
+      for (const item of viewerView.table) {
+        if (item.id === source.id) continue;
+        if (item.kind === 'build' && item.ownerSeat === 0) {
+          if (
+            looseBuildMerges.some(
+              (m) => m.buildId === item.id && m.targetItemIds.includes(source.id)
+            )
+          ) {
+            map.set(item.id, 'cement');
+          }
+        } else if (item.kind === 'loose') {
+          if (!source.card.isFaceCard && !item.card.isFaceCard) {
+            if (stagedTableGroup && stagedTableGroup.anchorId === item.id) {
+              if (!stagedIds.includes(source.id) && stagedIds.length < 4 && stagedSum + source.card.rank <= 10) {
+                map.set(item.id, 'build');
+              }
+            } else if (source.card.rank + item.card.rank <= 10) {
+              map.set(item.id, 'build');
+            }
+          }
+        } else if (item.kind === 'build' && item.ownerSeat !== 0) {
+          const combo = findComboMovesForItems(
+            [item.id, source.id],
+            myHand,
+            viewerView.table,
+            viewerView.players,
+            isFinalDealCard
+          );
+          if (combo.handCaptures.length > 0) map.set(item.id, 'capture');
+          else if (combo.handBuilds.length > 0) map.set(item.id, 'build');
+        }
       }
+      return map;
     }
-    for (const opt of activeCardMoves.buildOptions) {
-      const mode = opt.resultingCemented ? 'cement' : 'build';
-      for (const id of opt.targetItemIds) {
-        const existing = map.get(id);
-        if (!existing) {
-          map.set(id, mode);
-        } else if (existing === 'build' && mode === 'cement') {
-          map.set(id, 'cement');
+
+    if (stagedDragState) {
+      const stagedSum = stagedDragState.cards.reduce((acc, c) => acc + c.rank, 0);
+      for (const item of viewerView.table) {
+        if (stagedDragState.itemIds.includes(item.id)) continue;
+        if (item.kind === 'build' && item.ownerSeat === 0) {
+          if (
+            looseBuildMerges.some(
+              (m) => m.buildId === item.id && haveSameIdSet(m.targetItemIds, stagedDragState.itemIds)
+            )
+          ) {
+            map.set(item.id, 'cement');
+          }
+        } else if (item.kind === 'build' && item.ownerSeat !== 0) {
+          const combo = findComboMovesForItems(
+            [item.id, ...stagedDragState.itemIds],
+            myHand,
+            viewerView.table,
+            viewerView.players,
+            isFinalDealCard
+          );
+          if (combo.handCaptures.length > 0) map.set(item.id, 'capture');
+          else if (combo.handBuilds.length > 0) map.set(item.id, 'build');
+        } else if (
+          item.kind === 'loose' &&
+          !item.card.isFaceCard &&
+          stagedDragState.itemIds.length < 4 &&
+          stagedSum + item.card.rank <= 10
+        ) {
+          map.set(item.id, 'build');
+        }
+      }
+      return map;
+    }
+
+    if (digDragState) {
+      for (const m of tableDigMerges) {
+        if (m.dugFromSeat === digDragState.sourceSeat) {
+          map.set(m.buildId, 'cement');
+          for (const id of m.targetItemIds) map.set(id, 'build');
+        }
+      }
+      for (const card of myHand) {
+        const capOpts = findValidCaptureOptions(
+          card,
+          myHand,
+          viewerView.table,
+          0,
+          isFinalDealCard,
+          viewerView.players
+        );
+        for (const opt of capOpts) {
+          if (opt.dugCapturedFromSeat === digDragState.sourceSeat) {
+            for (const id of opt.capturedItemIds) map.set(id, 'capture');
+          }
+        }
+        const bldOpts = findValidBuildOptions(
+          card,
+          myHand,
+          viewerView.table,
+          0,
+          viewerView.players
+        );
+        for (const opt of bldOpts) {
+          if (opt.dugCapturedFromSeat === digDragState.sourceSeat) {
+            for (const id of opt.targetItemIds) {
+              if (!map.has(id)) map.set(id, opt.resultingCemented ? 'cement' : 'build');
+            }
+          }
+        }
+      }
+      return map;
+    }
+
+    if (inspectedHandCard) {
+      for (const opt of activeCardMoves.captureOptions) {
+        for (const id of opt.capturedItemIds) {
+          map.set(id, 'capture');
+        }
+      }
+      for (const opt of activeCardMoves.buildOptions) {
+        const mode = opt.resultingCemented ? 'cement' : 'build';
+        for (const id of opt.targetItemIds) {
+          const existing = map.get(id);
+          if (!existing) {
+            map.set(id, mode);
+          } else if (existing === 'build' && mode === 'cement') {
+            map.set(id, 'cement');
+          }
+        }
+      }
+      return map;
+    }
+
+    if (viewerView.activeDugCard !== null) {
+      for (const m of tableDigMerges) {
+        map.set(m.buildId, 'cement');
+        for (const id of m.targetItemIds) map.set(id, 'build');
+      }
+      for (const card of myHand) {
+        const capOpts = findValidCaptureOptions(
+          card,
+          myHand,
+          viewerView.table,
+          0,
+          isFinalDealCard,
+          viewerView.players,
+          viewerView.activeDugCard
+        );
+        for (const opt of capOpts) {
+          for (const id of opt.capturedItemIds) map.set(id, 'capture');
+        }
+        const bldOpts = findValidBuildOptions(
+          card,
+          myHand,
+          viewerView.table,
+          0,
+          viewerView.players,
+          viewerView.activeDugCard
+        );
+        for (const opt of bldOpts) {
+          for (const id of opt.targetItemIds) {
+            if (!map.has(id)) map.set(id, opt.resultingCemented ? 'cement' : 'build');
+          }
         }
       }
     }
+
     return map;
-  }, [inspectedHandCard, isMyTurn, activeCardMoves]);
+  }, [
+    isMyTurn,
+    tableDragState,
+    stagedDragState,
+    digDragState,
+    stagedTableGroup,
+    inspectedHandCard,
+    activeCardMoves,
+    looseBuildMerges,
+    tableDigMerges,
+    myHand,
+    viewerView.table,
+    viewerView.players,
+    viewerView.activeDugCard,
+    isFinalDealCard,
+  ]);
 
   // Reset UI overlays when starting a fresh deal
   const startFreshDeal = useCallback(
@@ -492,8 +900,15 @@ export function App() {
       matchScores?: Record<number, number>;
     }) => {
       sharedAudioEngine.unlock();
+      tablePointerRef.current = null;
       setSelectedCardId(null);
       setDragState(null);
+      setTableDragState(null);
+      setDigDragState(null);
+      setStagedTableGroup(null);
+      setStagedDragState(null);
+      setTableComboState(null);
+      setDugFocusTargetId(null);
       setHoveredDropTargetId(null);
       setInlineActionState(null);
       setPendingUndo(null);

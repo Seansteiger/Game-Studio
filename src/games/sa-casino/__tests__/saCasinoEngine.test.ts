@@ -3,14 +3,17 @@ import { createCard } from '../../../studio/core';
 import {
   applySACasinoAction,
   calculateDealScore,
+  canPullOpponentTopCard,
   canTrailCard,
   chooseTacticalBotAction,
   createInitialSACasinoState,
   diagnoseFailedTargetPlay,
   findValidBuildOptions,
   findValidCaptureOptions,
+  findValidLooseToBuildMerges,
   findValidTableDigMerges,
   getSACasinoPlayerView,
+  sortComponentDesc,
   validateCaptureSelection,
 } from '../index';
 import { SACasinoState, TableBuildStack, TableLooseCard } from '../types';
@@ -880,5 +883,531 @@ describe('SA Casino 40-Card Rules Engine', () => {
       0
     );
     expect(secondBuildMsg).toContain('already have a 4 build');
+  });
+
+  it('orders build cards smaller-on-larger per component and preserves layering across steps', () => {
+    const twoH = createCard('H', 2);
+    const sevenS = createCard('S', 7);
+    const twoD = createCard('D', 2);
+    const sevenC = createCard('C', 7);
+    const nineH = createCard('H', 9);
+    const nineC = createCard('C', 9);
+    const aceD = createCard('D', 1);
+    const fourS = createCard('S', 4);
+    const sixC = createCard('C', 6);
+    const tenD = createCard('D', 10);
+
+    // Direct helper ordering: larger card underneath (index 0), smaller on top (index 1)
+    expect(sortComponentDesc([twoH, sevenS])).toEqual([sevenS, twoH]);
+    expect(sortComponentDesc([aceD, nineH])).toEqual([nineH, aceD]);
+    expect(sortComponentDesc([fourS, sixC])).toEqual([sixC, fourS]);
+
+    const baseState = createInitialSACasinoState({ mode: '1v1', seed: 121 });
+
+    // Step 1: Seat 0 plays 2H onto loose 7S to create Open Build 9 (holding 9H)
+    const s0: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [twoH, nineH], capturedCards: [] },
+        { ...baseState.players[1], hand: [twoD, nineC], capturedCards: [] },
+      ],
+      table: [makeLoose(sevenS), makeLoose(sevenC)],
+    };
+
+    const step1 = applySACasinoAction(s0, {
+      type: 'BUILD',
+      playerSeat: 0,
+      payload: {
+        cardId: twoH.id,
+        targetItemIds: [`loose:${sevenS.id}`],
+        targetValue: 9,
+        mode: 'CREATE_OPEN',
+      },
+    });
+    expect(step1.error).toBeUndefined();
+    const b1 = step1.state.table.find((it): it is TableBuildStack => it.kind === 'build')!;
+    expect(b1.components).toEqual([[sevenS, twoH]]);
+    expect(b1.cards).toEqual([sevenS, twoH]);
+
+    // Step 2: Seat 1 cements Build 9 by adding 2D + loose 7C while holding 9C
+    // Existing [7S, 2H] stays underneath; new [7C, 2D] sits on top -> [7S, 2H, 7C, 2D]
+    const step2 = applySACasinoAction(step1.state, {
+      type: 'BUILD',
+      playerSeat: 1,
+      payload: {
+        cardId: twoD.id,
+        targetItemIds: [b1.id, `loose:${sevenC.id}`],
+        targetValue: 9,
+        mode: 'CEMENT',
+      },
+    });
+    expect(step2.error).toBeUndefined();
+    const b2 = step2.state.table.find((it): it is TableBuildStack => it.kind === 'build')!;
+    expect(b2.isCemented).toBe(true);
+    expect(b2.components).toEqual([
+      [sevenS, twoH],
+      [sevenC, twoD],
+    ]);
+    expect(b2.cards).toEqual([sevenS, twoH, sevenC, twoD]);
+
+    // RAISE_OPEN also sorts cards descending in the combined component
+    const raiseState: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [aceD, tenD], capturedCards: [] },
+        { ...baseState.players[1], hand: [nineC], capturedCards: [] },
+      ],
+      table: [makeBuild('open-9', [sevenS, twoH], [[sevenS, twoH]], 9, 1, false)],
+    };
+    const raiseRes = applySACasinoAction(raiseState, {
+      type: 'BUILD',
+      playerSeat: 0,
+      payload: {
+        cardId: aceD.id,
+        targetItemIds: ['open-9'],
+        targetValue: 10,
+        mode: 'RAISE_OPEN',
+      },
+    });
+    expect(raiseRes.error).toBeUndefined();
+    const raised = raiseRes.state.table[0] as TableBuildStack;
+    expect(raised.components).toEqual([[sevenS, twoH, aceD]]);
+    expect(raised.cards).toEqual([sevenS, twoH, aceD]);
+  });
+
+  it('merges an opponent uncemented Build 3 + 7 from hand into own Build 10 (while forbidding cemented merges)', () => {
+    const baseState = createInitialSACasinoState({ mode: '1v1', seed: 131 });
+    const sevenH = createCard('H', 7);
+    const tenS = createCard('S', 10);
+    const tenD = createCard('D', 10);
+    const sixC = createCard('C', 6);
+    const fourD = createCard('D', 4);
+    const twoC = createCard('C', 2);
+    const aceH = createCard('H', 1);
+
+    const ownBuild10 = makeBuild('own-10', [sixC, fourD], [[sixC, fourD]], 10, 0, false);
+    const oppOpen3 = makeBuild('opp-open-3', [twoC, aceH], [[twoC, aceH]], 3, 1, false);
+    const oppLocked3 = makeBuild(
+      'opp-locked-3',
+      [twoC, aceH, createCard('S', 3)],
+      [[twoC, aceH], [createCard('S', 3)]],
+      3,
+      1,
+      true
+    );
+
+    const buildOpts = findValidBuildOptions(
+      sevenH,
+      [sevenH, tenS],
+      [ownBuild10, oppOpen3],
+      0
+    );
+    const mergeOpt = buildOpts.find(
+      (b) =>
+        b.targetValue === 10 &&
+        b.buildMode === 'CEMENT' &&
+        b.resultingCemented &&
+        b.targetItemIds.includes(ownBuild10.id) &&
+        b.targetItemIds.includes(oppOpen3.id)
+    );
+    expect(mergeOpt).toBeDefined();
+
+    // Cemented opponent Build 3 MUST NOT be mergeable into own Build 10
+    const lockedMergeOpts = findValidBuildOptions(
+      sevenH,
+      [sevenH, tenS],
+      [ownBuild10, oppLocked3],
+      0
+    );
+    expect(
+      lockedMergeOpts.some((b) => b.targetItemIds.includes(oppLocked3.id))
+    ).toBe(false);
+
+    const state: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [sevenH, tenS], capturedCards: [] },
+        { ...baseState.players[1], hand: [tenD], capturedCards: [] },
+      ],
+      table: [ownBuild10, oppOpen3],
+    };
+
+    const res = applySACasinoAction(state, {
+      type: 'BUILD',
+      playerSeat: 0,
+      payload: {
+        cardId: sevenH.id,
+        targetItemIds: [ownBuild10.id, oppOpen3.id],
+        targetValue: 10,
+        mode: 'CEMENT',
+      },
+    });
+    expect(res.error).toBeUndefined();
+    expect(res.state.table).toHaveLength(1);
+    const merged = res.state.table[0] as TableBuildStack;
+    expect(merged.kind).toBe('build');
+    expect(merged.ownerSeat).toBe(0);
+    expect(merged.targetValue).toBe(10);
+    expect(merged.isCemented).toBe(true);
+    expect(merged.components).toEqual([
+      [sixC, fourD],
+      [sevenH, twoC, aceH],
+    ]);
+    expect(merged.cards).toEqual([sixC, fourD, sevenH, twoC, aceH]);
+  });
+
+  it('captures an opponent uncemented Build 3 + loose 7 with a 10, while locking cemented builds to exact rank', () => {
+    const baseState = createInitialSACasinoState({ mode: '1v1', seed: 141 });
+    const tenS = createCard('S', 10);
+    const sevenD = createCard('D', 7);
+    const twoH = createCard('H', 2);
+    const aceC = createCard('C', 1);
+    const threeS = createCard('S', 3);
+    const fourH = createCard('H', 4);
+
+    const oppOpen3 = makeBuild('opp-open-3', [twoH, aceC], [[twoH, aceC]], 3, 1, false);
+    const oppLocked3 = makeBuild(
+      'opp-locked-3',
+      [twoH, aceC, threeS],
+      [[twoH, aceC], [threeS]],
+      3,
+      1,
+      true
+    );
+
+    const capOpts = findValidCaptureOptions(
+      tenS,
+      [tenS, fourH],
+      [oppOpen3, makeLoose(sevenD)],
+      0,
+      false
+    );
+    const openCombo = capOpts.find(
+      (c) =>
+        c.capturedItemIds.includes(oppOpen3.id) &&
+        c.capturedItemIds.includes(`loose:${sevenD.id}`)
+    );
+    expect(openCombo).toBeDefined();
+    expect(openCombo?.isSweep).toBe(true);
+
+    // Cemented Build 3 + loose 7 CANNOT be captured by 10
+    const lockedCheck = validateCaptureSelection(
+      tenS,
+      [tenS, fourH],
+      [oppLocked3, makeLoose(sevenD)],
+      [oppLocked3.id, `loose:${sevenD.id}`],
+      0
+    );
+    expect(lockedCheck.valid).toBe(false);
+
+    // Execute legal capture via reducer
+    const state: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [tenS, fourH], capturedCards: [] },
+        { ...baseState.players[1], hand: [threeS], capturedCards: [] },
+      ],
+      table: [oppOpen3, makeLoose(sevenD)],
+    };
+    const res = applySACasinoAction(state, {
+      type: 'CAPTURE',
+      playerSeat: 0,
+      payload: {
+        cardId: tenS.id,
+        capturedItemIds: [oppOpen3.id, `loose:${sevenD.id}`],
+      },
+    });
+    expect(res.error).toBeUndefined();
+    expect(res.state.table).toHaveLength(0);
+    expect(res.state.players[0].capturedCards).toHaveLength(4);
+    expect(res.state.players[0].capturedCards[3]).toEqual(tenS);
+  });
+
+  it('moves loose 4 + 6 directly into own Build 10 via MERGE_LOOSE_TO_BUILD without ending turn', () => {
+    const baseState = createInitialSACasinoState({ mode: '1v1', seed: 151 });
+    const fourC = createCard('C', 4);
+    const sixH = createCard('H', 6);
+    const aceS = createCard('S', 1);
+    const nineD = createCard('D', 9);
+    const tenD = createCard('D', 10);
+    const tenC = createCard('C', 10);
+    const threeH = createCard('H', 3);
+
+    const ownBuild10 = makeBuild('own-10', [tenC], [[tenC]], 10, 0, false);
+    const table = [ownBuild10, makeLoose(fourC), makeLoose(sixH), makeLoose(nineD)];
+
+    const looseMerges = findValidLooseToBuildMerges(table, 0);
+    expect(looseMerges).toHaveLength(1);
+    expect(looseMerges[0].buildId).toBe(ownBuild10.id);
+    expect(looseMerges[0].targetItemIds).toEqual([`loose:${fourC.id}`, `loose:${sixH.id}`].sort());
+
+    const state: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [aceS, tenD], capturedCards: [] },
+        { ...baseState.players[1], hand: [threeH], capturedCards: [] },
+      ],
+      table,
+    };
+
+    const mergeRes = applySACasinoAction(state, {
+      type: 'MERGE_LOOSE_TO_BUILD',
+      playerSeat: 0,
+      payload: {
+        buildId: ownBuild10.id,
+        targetItemIds: [`loose:${fourC.id}`, `loose:${sixH.id}`],
+      },
+    });
+    expect(mergeRes.error).toBeUndefined();
+    // Turn stays on Seat 0, hand unchanged, loose 4+6 layered as [6H, 4C] on top of [10C] and cemented
+    expect(mergeRes.state.currentTurnSeat).toBe(0);
+    expect(mergeRes.state.players[0].hand).toEqual([aceS, tenD]);
+    const updatedBuild = mergeRes.state.table.find(
+      (it): it is TableBuildStack => it.kind === 'build'
+    )!;
+    expect(updatedBuild.isCemented).toBe(true);
+    expect(updatedBuild.components).toEqual([[tenC], [sixH, fourC]]);
+    expect(updatedBuild.cards).toEqual([tenC, sixH, fourC]);
+
+    // Seat 0 immediately follows up on the SAME turn by cementing Ace onto loose 9 into Build 10!
+    const followUp = applySACasinoAction(mergeRes.state, {
+      type: 'BUILD',
+      playerSeat: 0,
+      payload: {
+        cardId: aceS.id,
+        targetItemIds: [updatedBuild.id, `loose:${nineD.id}`],
+        targetValue: 10,
+        mode: 'CEMENT',
+      },
+    });
+    expect(followUp.error).toBeUndefined();
+    expect(followUp.state.currentTurnSeat).toBe(1);
+    const finalBuild = followUp.state.table[0] as TableBuildStack;
+    expect(finalBuild.components).toEqual([[tenC], [sixH, fourC], [nineD, aceS]]);
+    expect(finalBuild.cards).toEqual([tenC, sixH, fourC, nineD, aceS]);
+  });
+
+  it('enforces PULL_OPPONENT_TOP_CARD validation, blocks TRAIL, and forces completion via CAPTURE, BUILD, or DIG_TABLE_TO_BUILD', () => {
+    const baseState = createInitialSACasinoState({ mode: '1v1', seed: 161 });
+    const fiveH = createCard('H', 5);
+    const fiveS = createCard('S', 5);
+    const fiveD = createCard('D', 5);
+    const eightC = createCard('C', 8);
+    const fourS = createCard('S', 4);
+    const twoD = createCard('D', 2);
+    const threeH = createCard('H', 3);
+    const sevenD = createCard('D', 7);
+    const sevenS = createCard('S', 7);
+    const nineC = createCard('C', 9);
+
+    // 1. Reject pulling when player lacks the required follow-up card
+    const lackCardState: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [fourS], capturedCards: [] },
+        { ...baseState.players[1], hand: [eightC], capturedCards: [eightC, fiveD] },
+      ],
+      table: [makeLoose(fiveS)],
+    };
+    const canPullInvalid = canPullOpponentTopCard(
+      1,
+      lackCardState.players[0].hand,
+      lackCardState.table,
+      0,
+      lackCardState.players,
+      false
+    );
+    expect(canPullInvalid.valid).toBe(false);
+
+    const rejectedPull = applySACasinoAction(lackCardState, {
+      type: 'PULL_OPPONENT_TOP_CARD',
+      playerSeat: 0,
+      payload: { sourceSeat: 1 },
+    });
+    expect(rejectedPull.error).toBeDefined();
+    expect(rejectedPull.state.activeDugCard).toBeNull();
+    expect(rejectedPull.state.players[1].capturedCards).toEqual([eightC, fiveD]);
+
+    // 2. Legal pull followed by blocked TRAIL and completion via CAPTURE
+    const capState: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [fiveH, twoD], capturedCards: [] },
+        { ...baseState.players[1], hand: [eightC], capturedCards: [eightC, fiveD] },
+      ],
+      table: [makeLoose(fiveS)],
+    };
+    const pullForCap = applySACasinoAction(capState, {
+      type: 'PULL_OPPONENT_TOP_CARD',
+      playerSeat: 0,
+      payload: { sourceSeat: 1, targetItemId: `loose:${fiveS.id}` },
+    });
+    expect(pullForCap.error).toBeUndefined();
+    expect(pullForCap.state.currentTurnSeat).toBe(0);
+    // Opponent top 5D popped permanently right on pull, exposing 8C beneath
+    expect(pullForCap.state.players[1].capturedCards).toEqual([eightC]);
+    expect(pullForCap.state.activeDugCard).toEqual({
+      sourceSeat: 1,
+      card: fiveD,
+      attachedTargetId: `loose:${fiveS.id}`,
+    });
+
+    // TRAIL must be blocked while activeDugCard is pending
+    const blockedTrail = applySACasinoAction(pullForCap.state, {
+      type: 'TRAIL',
+      playerSeat: 0,
+      payload: { cardId: twoD.id },
+    });
+    expect(blockedTrail.error).toBe(
+      'You must finish playing or capturing the card you took from your opponent.'
+    );
+
+    // CAPTURE without using the pulled card's sourceSeat must fail
+    const wrongCap = applySACasinoAction(pullForCap.state, {
+      type: 'CAPTURE',
+      playerSeat: 0,
+      payload: { cardId: fiveH.id, capturedItemIds: [`loose:${fiveS.id}`] },
+    });
+    expect(wrongCap.error).toBeDefined();
+
+    // Completing CAPTURE with dugCapturedFromSeat=1 clears activeDugCard and does NOT pop 8C again
+    const completedCap = applySACasinoAction(pullForCap.state, {
+      type: 'CAPTURE',
+      playerSeat: 0,
+      payload: {
+        cardId: fiveH.id,
+        capturedItemIds: [`loose:${fiveS.id}`],
+        dugCapturedFromSeat: 1,
+      },
+    });
+    expect(completedCap.error).toBeUndefined();
+    expect(completedCap.state.activeDugCard).toBeNull();
+    expect(completedCap.state.currentTurnSeat).toBe(1);
+    expect(completedCap.state.players[1].capturedCards).toEqual([eightC]);
+    expect(completedCap.state.players[0].capturedCards).toEqual([fiveS, fiveD, fiveH]);
+
+    // 3. Legal pull followed by completion via BUILD
+    const buildState: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [threeH, sevenS], capturedCards: [] },
+        { ...baseState.players[1], hand: [twoD], capturedCards: [nineC, createCard('C', 4)] },
+      ],
+      table: [makeLoose(sevenD)],
+    };
+    const pullForBuild = applySACasinoAction(buildState, {
+      type: 'PULL_OPPONENT_TOP_CARD',
+      playerSeat: 0,
+      payload: { sourceSeat: 1 },
+    });
+    expect(pullForBuild.error).toBeUndefined();
+    expect(pullForBuild.state.players[1].capturedCards).toEqual([nineC]);
+
+    const completedBuild = applySACasinoAction(pullForBuild.state, {
+      type: 'BUILD',
+      playerSeat: 0,
+      payload: {
+        cardId: threeH.id,
+        targetItemIds: [`loose:${sevenD.id}`],
+        targetValue: 7,
+        mode: 'CEMENT',
+        dugCapturedFromSeat: 1,
+      },
+    });
+    expect(completedBuild.error).toBeUndefined();
+    expect(completedBuild.state.activeDugCard).toBeNull();
+    expect(completedBuild.state.players[1].capturedCards).toEqual([nineC]);
+    const builtStack = completedBuild.state.table[0] as TableBuildStack;
+    expect(builtStack.components).toEqual([[sevenD], [createCard('C', 4), threeH]]);
+    expect(builtStack.cards).toEqual([sevenD, createCard('C', 4), threeH]);
+
+    // 4. Legal pull followed by completion via DIG_TABLE_TO_BUILD
+    const ownBuild7 = makeBuild('own-7', [sevenS], [[sevenS]], 7, 0, false);
+    const digMergeState: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [sevenD, fourS], capturedCards: [] },
+        { ...baseState.players[1], hand: [nineC], capturedCards: [nineC, twoD] },
+      ],
+      table: [ownBuild7, makeLoose(fiveH)],
+    };
+    const pullForDigMerge = applySACasinoAction(digMergeState, {
+      type: 'PULL_OPPONENT_TOP_CARD',
+      playerSeat: 0,
+      payload: { sourceSeat: 1 },
+    });
+    expect(pullForDigMerge.error).toBeUndefined();
+    expect(pullForDigMerge.state.players[1].capturedCards).toEqual([nineC]);
+
+    const completedDigMerge = applySACasinoAction(pullForDigMerge.state, {
+      type: 'DIG_TABLE_TO_BUILD',
+      playerSeat: 0,
+      payload: {
+        buildId: ownBuild7.id,
+        targetItemIds: [`loose:${fiveH.id}`],
+        dugFromSeat: 1,
+      },
+    });
+    expect(completedDigMerge.error).toBeUndefined();
+    expect(completedDigMerge.state.activeDugCard).toBeNull();
+    expect(completedDigMerge.state.currentTurnSeat).toBe(0);
+    expect(completedDigMerge.state.players[1].capturedCards).toEqual([nineC]);
+    const cemented7 = completedDigMerge.state.table[0] as TableBuildStack;
+    expect(cemented7.isCemented).toBe(true);
+    expect(cemented7.components).toEqual([[sevenS], [fiveH, twoD]]);
+    expect(cemented7.cards).toEqual([sevenS, fiveH, twoD]);
+
+    // 5. MERGE_LOOSE_TO_BUILD is blocked while activeDugCard !== null, and capturing open Build 3 + dug 7 with 10 works
+    const open3 = makeBuild('open-3', [twoD, createCard('C', 1)], [[twoD, createCard('C', 1)]], 3, 1, false);
+    const own10 = makeBuild('own-10', [createCard('S', 10)], [[createCard('S', 10)]], 10, 0, true);
+    const blockedMergeState: SACasinoState = {
+      ...baseState,
+      currentTurnSeat: 0,
+      players: [
+        { ...baseState.players[0], hand: [createCard('H', 10), createCard('D', 10)], capturedCards: [] },
+        { ...baseState.players[1], hand: [eightC], capturedCards: [eightC, sevenD] },
+      ],
+      table: [own10, open3, makeLoose(createCard('S', 6)), makeLoose(fourS)],
+    };
+    const pulled7 = applySACasinoAction(blockedMergeState, {
+      type: 'PULL_OPPONENT_TOP_CARD',
+      playerSeat: 0,
+      payload: { sourceSeat: 1 },
+    });
+    expect(pulled7.error).toBeUndefined();
+
+    const blockedLooseMerge = applySACasinoAction(pulled7.state, {
+      type: 'MERGE_LOOSE_TO_BUILD',
+      playerSeat: 0,
+      payload: {
+        buildId: own10.id,
+        targetItemIds: [`loose:${createCard('S', 6).id}`, `loose:${fourS.id}`],
+      },
+    });
+    expect(blockedLooseMerge.error).toBe(
+      'You must finish playing or capturing the card you took from your opponent.'
+    );
+
+    const capOpenBuildPlusDug = applySACasinoAction(pulled7.state, {
+      type: 'CAPTURE',
+      playerSeat: 0,
+      payload: {
+        cardId: createCard('H', 10).id,
+        capturedItemIds: [open3.id],
+        dugCapturedFromSeat: 1,
+      },
+    });
+    expect(capOpenBuildPlusDug.error).toBeUndefined();
+    expect(capOpenBuildPlusDug.state.activeDugCard).toBeNull();
+    expect(capOpenBuildPlusDug.state.players[0].capturedCards).toHaveLength(4);
   });
 });

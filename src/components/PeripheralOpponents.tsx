@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Card } from '../studio/core';
 import { MaskedPlayerSeatState, SACasinoPlayerView } from '../games/sa-casino/types';
 import { CardSvg } from './CardSvg';
@@ -8,16 +8,33 @@ export interface PeripheralOpponentsProps {
   activeSeat: number;
   diggableSeats?: ReadonlySet<number>;
   onClickDigSeat?: (seat: number) => void;
+  onDragStartDigSeat?: (seat: number, card: Card, clientX: number, clientY: number) => void;
+  onDragMoveDigSeat?: (clientX: number, clientY: number) => void;
+  onDragEndDigSeat?: (seat: number, card: Card, clientX: number, clientY: number) => void;
 }
 
 export interface FaceUpCapturedDeckProps {
+  seat?: number;
   topCard: Card | null;
   hasMultipleCards: boolean;
   size: 'xs' | 'sm';
   isDiggable?: boolean;
   onClickDig?: () => void;
+  onDragStartDig?: (card: Card, clientX: number, clientY: number) => void;
+  onDragMoveDig?: (clientX: number, clientY: number) => void;
+  onDragEndDig?: (card: Card, clientX: number, clientY: number) => void;
   playerName: string;
 }
+
+interface DigPointerSession {
+  pointerId: number;
+  card: Card;
+  startX: number;
+  startY: number;
+  hasDragged: boolean;
+}
+
+const DRAG_THRESHOLD_PX = 8;
 
 const DECK_DIMENSIONS: Record<FaceUpCapturedDeckProps['size'], { width: number; height: number }> = {
   xs: { width: 52, height: 74 },
@@ -25,24 +42,89 @@ const DECK_DIMENSIONS: Record<FaceUpCapturedDeckProps['size'], { width: number; 
 };
 
 export function FaceUpCapturedDeck({
+  seat,
   topCard,
   hasMultipleCards,
   size,
   isDiggable = false,
   onClickDig,
+  onDragStartDig,
+  onDragMoveDig,
+  onDragEndDig,
   playerName,
 }: FaceUpCapturedDeckProps) {
   const dims = DECK_DIMENSIONS[size];
+  const sessionRef = useRef<DigPointerSession | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    if (!isDiggable || !topCard) {
+      sessionRef.current = null;
+      setIsDragging(false);
+    }
+  }, [isDiggable, topCard]);
 
   if (!topCard) {
     return (
       <div
+        data-captured-seat={seat}
         className="shrink-0 rounded-[6px] border border-dashed border-white/10 bg-black/20"
         style={{ width: dims.width, height: dims.height }}
         aria-label={`${playerName} empty capture pile`}
       />
     );
   }
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDiggable) return;
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+
+    e.currentTarget.setPointerCapture(e.pointerId);
+    sessionRef.current = {
+      pointerId: e.pointerId,
+      card: topCard,
+      startX: e.clientX,
+      startY: e.clientY,
+      hasDragged: false,
+    };
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const session = sessionRef.current;
+    if (!session || session.pointerId !== e.pointerId) return;
+
+    if (!session.hasDragged) {
+      const dist = Math.hypot(e.clientX - session.startX, e.clientY - session.startY);
+      if (dist > DRAG_THRESHOLD_PX) {
+        session.hasDragged = true;
+        setIsDragging(true);
+        onDragStartDig?.(session.card, e.clientX, e.clientY);
+      }
+    } else {
+      onDragMoveDig?.(e.clientX, e.clientY);
+    }
+  };
+
+  const finishPointer = (
+    e: React.PointerEvent<HTMLDivElement>,
+    cancelled: boolean
+  ) => {
+    const session = sessionRef.current;
+    if (!session || session.pointerId !== e.pointerId) return;
+
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+
+    sessionRef.current = null;
+
+    if (session.hasDragged) {
+      setIsDragging(false);
+      onDragEndDig?.(session.card, e.clientX, e.clientY);
+    } else if (!cancelled) {
+      onClickDig?.();
+    }
+  };
 
   const stackContent = (
     <div
@@ -62,7 +144,11 @@ export function FaceUpCapturedDeck({
         </>
       )}
 
-      <div className="relative">
+      <div
+        className={`relative transition-opacity duration-150 ${
+          isDragging ? 'opacity-35' : 'opacity-100'
+        }`}
+      >
         <CardSvg
           card={topCard}
           faceUp
@@ -84,22 +170,36 @@ export function FaceUpCapturedDeck({
     </div>
   );
 
-  if (isDiggable && onClickDig) {
+  if (isDiggable) {
     return (
-      <button
-        type="button"
-        onClick={onClickDig}
+      <div
+        role="button"
+        tabIndex={0}
+        data-captured-seat={seat}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onClickDig?.();
+          }
+        }}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={(e) => finishPointer(e, false)}
+        onPointerCancel={(e) => finishPointer(e, true)}
         title={`Dig ${topCard.label}`}
         aria-label={`Dig ${topCard.label} from ${playerName}`}
-        className="pointer-events-auto relative cursor-pointer rounded-[7px] transition-transform duration-150 hover:-translate-y-0.5 active:scale-[0.97] focus:outline-none"
+        className={`pointer-events-auto relative touch-none cursor-grab active:cursor-grabbing select-none rounded-[7px] transition-transform duration-150 focus:outline-none focus-visible:outline-2 focus-visible:outline-amber-400/80 ${
+          isDragging ? '' : 'hover:-translate-y-0.5 active:scale-[0.97]'
+        }`}
       >
         {stackContent}
-      </button>
+      </div>
     );
   }
 
   return (
     <div
+      data-captured-seat={seat}
       className="relative"
       aria-label={`${playerName} top captured card ${topCard.label}`}
     >
@@ -356,6 +456,9 @@ function NorthSeat({
   isActive,
   isDiggable,
   onClickDig,
+  onDragStartDig,
+  onDragMoveDig,
+  onDragEndDig,
   lastActionText,
   lastActionSwept,
 }: {
@@ -363,6 +466,9 @@ function NorthSeat({
   isActive: boolean;
   isDiggable: boolean;
   onClickDig?: () => void;
+  onDragStartDig?: (card: Card, clientX: number, clientY: number) => void;
+  onDragMoveDig?: (clientX: number, clientY: number) => void;
+  onDragEndDig?: (card: Card, clientX: number, clientY: number) => void;
   lastActionText: string | null;
   lastActionSwept: boolean;
 }) {
@@ -435,11 +541,15 @@ function NorthSeat({
         {/* Face-Up Captured Deck showing only top-most card */}
         <div className="flex flex-col items-center gap-1">
           <FaceUpCapturedDeck
+            seat={info.player.seat}
             topCard={info.player.topCapturedCard}
             hasMultipleCards={info.player.capturedCount > 1}
             size="xs"
             isDiggable={isDiggable}
             onClickDig={onClickDig}
+            onDragStartDig={onDragStartDig}
+            onDragMoveDig={onDragMoveDig}
+            onDragEndDig={onDragEndDig}
             playerName={displayName}
           />
           <span className="rounded-full border border-[#c89d54]/25 bg-[#150e09]/85 px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-[#dfc088] backdrop-blur-sm">
@@ -465,6 +575,9 @@ function SideSeat({
   isActive,
   isDiggable,
   onClickDig,
+  onDragStartDig,
+  onDragMoveDig,
+  onDragEndDig,
   lastActionText,
   lastActionSwept,
 }: {
@@ -473,6 +586,9 @@ function SideSeat({
   isActive: boolean;
   isDiggable: boolean;
   onClickDig?: () => void;
+  onDragStartDig?: (card: Card, clientX: number, clientY: number) => void;
+  onDragMoveDig?: (clientX: number, clientY: number) => void;
+  onDragEndDig?: (card: Card, clientX: number, clientY: number) => void;
   lastActionText: string | null;
   lastActionSwept: boolean;
 }) {
@@ -558,11 +674,15 @@ function SideSeat({
         {/* Face-Up Captured Deck next to hand fan */}
         <div className="flex flex-col items-center gap-1">
           <FaceUpCapturedDeck
+            seat={info.player.seat}
             topCard={info.player.topCapturedCard}
             hasMultipleCards={info.player.capturedCount > 1}
             size="xs"
             isDiggable={isDiggable}
             onClickDig={onClickDig}
+            onDragStartDig={onDragStartDig}
+            onDragMoveDig={onDragMoveDig}
+            onDragEndDig={onDragEndDig}
             playerName={displayName}
           />
           <span className="rounded-full border border-[#c89d54]/25 bg-[#150e09]/85 px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-[#dfc088] backdrop-blur-sm">
@@ -580,12 +700,18 @@ function MobileOpponentSeat({
   isActive,
   isDiggable,
   onClickDig,
+  onDragStartDig,
+  onDragMoveDig,
+  onDragEndDig,
 }: {
   info: SeatRoleInfo;
   seatCount: number;
   isActive: boolean;
   isDiggable: boolean;
   onClickDig?: () => void;
+  onDragStartDig?: (card: Card, clientX: number, clientY: number) => void;
+  onDragMoveDig?: (clientX: number, clientY: number) => void;
+  onDragEndDig?: (card: Card, clientX: number, clientY: number) => void;
 }) {
   const shortName = formatSeatName(info.player.name);
   const count = info.player.handCount;
@@ -695,11 +821,15 @@ function MobileOpponentSeat({
             }}
           >
             <FaceUpCapturedDeck
+              seat={info.player.seat}
               topCard={info.player.topCapturedCard}
               hasMultipleCards={info.player.capturedCount > 1}
               size="xs"
               isDiggable={isDiggable}
               onClickDig={onClickDig}
+              onDragStartDig={onDragStartDig}
+              onDragMoveDig={onDragMoveDig}
+              onDragEndDig={onDragEndDig}
               playerName={shortName}
             />
           </div>
@@ -714,6 +844,9 @@ export function PeripheralOpponents({
   activeSeat,
   diggableSeats,
   onClickDigSeat,
+  onDragStartDigSeat,
+  onDragMoveDigSeat,
+  onDragEndDigSeat,
 }: PeripheralOpponentsProps) {
   const peripheralSeats = getPeripheralSeats(view);
   const north = peripheralSeats.find((s) => s.position === 'north');
@@ -734,6 +867,19 @@ export function PeripheralOpponents({
       swept: summary.swept,
     };
   };
+
+  const getSeatDigCallbacks = (seat: number) => ({
+    onClickDig: onClickDigSeat ? () => onClickDigSeat(seat) : undefined,
+    onDragStartDig: onDragStartDigSeat
+      ? (card: Card, clientX: number, clientY: number) =>
+          onDragStartDigSeat(seat, card, clientX, clientY)
+      : undefined,
+    onDragMoveDig: onDragMoveDigSeat,
+    onDragEndDig: onDragEndDigSeat
+      ? (card: Card, clientX: number, clientY: number) =>
+          onDragEndDigSeat(seat, card, clientX, clientY)
+      : undefined,
+  });
 
   return (
     <div className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
@@ -761,9 +907,7 @@ export function PeripheralOpponents({
                 seatCount={mobileSeats.length}
                 isActive={isActive}
                 isDiggable={isDiggable}
-                onClickDig={
-                  onClickDigSeat ? () => onClickDigSeat(info.player.seat) : undefined
-                }
+                {...getSeatDigCallbacks(info.player.seat)}
               />
             );
           })}
@@ -796,9 +940,7 @@ export function PeripheralOpponents({
             info={north}
             isActive={activeSeat === north.player.seat && view.phase === 'PLAYING'}
             isDiggable={Boolean(diggableSeats?.has(north.player.seat))}
-            onClickDig={
-              onClickDigSeat ? () => onClickDigSeat(north.player.seat) : undefined
-            }
+            {...getSeatDigCallbacks(north.player.seat)}
             lastActionText={getSeatAction(north.player.seat).text}
             lastActionSwept={getSeatAction(north.player.seat).swept}
           />
@@ -813,9 +955,7 @@ export function PeripheralOpponents({
             side="west"
             isActive={activeSeat === west.player.seat && view.phase === 'PLAYING'}
             isDiggable={Boolean(diggableSeats?.has(west.player.seat))}
-            onClickDig={
-              onClickDigSeat ? () => onClickDigSeat(west.player.seat) : undefined
-            }
+            {...getSeatDigCallbacks(west.player.seat)}
             lastActionText={getSeatAction(west.player.seat).text}
             lastActionSwept={getSeatAction(west.player.seat).swept}
           />
@@ -830,9 +970,7 @@ export function PeripheralOpponents({
             side="east"
             isActive={activeSeat === east.player.seat && view.phase === 'PLAYING'}
             isDiggable={Boolean(diggableSeats?.has(east.player.seat))}
-            onClickDig={
-              onClickDigSeat ? () => onClickDigSeat(east.player.seat) : undefined
-            }
+            {...getSeatDigCallbacks(east.player.seat)}
             lastActionText={getSeatAction(east.player.seat).text}
             lastActionSwept={getSeatAction(east.player.seat).swept}
           />

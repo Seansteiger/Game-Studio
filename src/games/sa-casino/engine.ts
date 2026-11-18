@@ -5,8 +5,11 @@ import {
 } from '../../studio/core';
 import {
   canPlayerCoverOwnedBuilds,
+  canPullOpponentTopCard,
   canTrailCard,
   findValidBuildOptions,
+  formatBuildRank,
+  sortComponentDesc,
   validateCaptureSelection,
 } from './buildAndCaptureValidator';
 import { calculateDealScore } from './scoring';
@@ -113,6 +116,7 @@ export function createInitialSACasinoState(config: SACasinoConfig): SACasinoStat
     matchScores,
     phase: 'PLAYING',
     turnCount: 0,
+    activeDugCard: null,
     lastActionSummary: {
       seat: dealerSeat,
       playerName: dealtPlayers[dealerSeat].name,
@@ -149,6 +153,7 @@ function advanceAfterPlayerTurn(
       lastCapturerSeat: updatedLastCapturerSeat,
       currentTurnSeat: nextSeat,
       turnCount: state.turnCount + 1,
+      activeDugCard: null,
       lastActionSummary: summary,
     };
   }
@@ -162,6 +167,7 @@ function advanceAfterPlayerTurn(
       lastCapturerSeat: updatedLastCapturerSeat,
       phase: 'ROUND_TRANSITION',
       turnCount: state.turnCount + 1,
+      activeDugCard: null,
       lastActionSummary: summary,
     };
   }
@@ -208,6 +214,7 @@ function advanceAfterPlayerTurn(
     matchScores: nextMatchScores,
     phase: 'DEAL_OVER',
     turnCount: state.turnCount + 1,
+    activeDugCard: null,
     lastActionSummary: summary,
     dealScoreBreakdown: breakdown,
   };
@@ -252,6 +259,7 @@ export function applySACasinoAction(
         players: nextPlayers,
         currentTurnSeat: firstTurnSeat,
         phase: 'PLAYING',
+        activeDugCard: null,
         lastActionSummary: {
           seat: state.dealerSeat,
           playerName: nextPlayers[state.dealerSeat].name,
@@ -283,11 +291,27 @@ export function applySACasinoAction(
     if (dugFromSeat === action.playerSeat) {
       return { state, events, error: 'Cannot dig your own captured pile.' };
     }
-    const sourcePlayer = state.players.find((p) => p.seat === dugFromSeat);
-    if (!sourcePlayer || sourcePlayer.capturedCards.length === 0) {
-      return { state, events, error: 'Target opponent has no top captured card to dig.' };
+
+    let dugCard: Card;
+    let shouldPopFromSource = false;
+    if (state.activeDugCard !== null) {
+      if (dugFromSeat !== state.activeDugCard.sourceSeat) {
+        return {
+          state,
+          events,
+          error: 'You must finish playing or capturing the card you took from your opponent.',
+        };
+      }
+      dugCard = state.activeDugCard.card;
+    } else {
+      const sourcePlayer = state.players.find((p) => p.seat === dugFromSeat);
+      if (!sourcePlayer || sourcePlayer.capturedCards.length === 0) {
+        return { state, events, error: 'Target opponent has no top captured card to dig.' };
+      }
+      dugCard = sourcePlayer.capturedCards[sourcePlayer.capturedCards.length - 1];
+      shouldPopFromSource = true;
     }
-    const dugCard = sourcePlayer.capturedCards[sourcePlayer.capturedCards.length - 1];
+
     if (dugCard.isFaceCard) {
       return { state, events, error: 'Face cards cannot be merged into a numeric build.' };
     }
@@ -300,25 +324,17 @@ export function applySACasinoAction(
       return { state, events, error: 'You can only merge dug cards into your own active build.' };
     }
 
-    if (targetItemIds.length === 0) {
-      return { state, events, error: 'Select at least one loose table card to merge with the dug card.' };
-    }
-    const uniqueTargetIds = new Set(targetItemIds);
-    if (uniqueTargetIds.size !== targetItemIds.length) {
-      return { state, events, error: 'Duplicate table targets selected.' };
-    }
-
-    const targetLooseCards: Card[] = [];
-    for (const id of targetItemIds) {
-      const found = state.table.find((it) => it.id === id);
-      if (!found || found.kind !== 'loose' || found.card.isFaceCard) {
-        return { state, events, error: 'Selected merge targets must be numeric loose table cards.' };
-      }
-      targetLooseCards.push(found.card);
+    const resolved = resolveNumericLooseTargets(
+      state.table,
+      targetItemIds,
+      'Select at least one loose table card to merge with the dug card.'
+    );
+    if ('error' in resolved) {
+      return { state, events, error: resolved.error };
     }
 
     const combinedSum =
-      dugCard.rank + targetLooseCards.reduce((sum, c) => sum + c.rank, 0);
+      dugCard.rank + resolved.cards.reduce((sum, c) => sum + c.rank, 0);
     if (combinedSum !== ownedBuild.targetValue) {
       return {
         state,
@@ -327,25 +343,23 @@ export function applySACasinoAction(
       };
     }
 
-    const updatedBuild: TableBuildStack = {
-      ...ownedBuild,
-      cards: [...ownedBuild.cards, dugCard, ...targetLooseCards],
-      components: [...ownedBuild.components, [dugCard, ...targetLooseCards]],
-      isCemented: true,
-    };
-
-    const nextTable: TableItem[] = state.table
-      .filter((it) => !uniqueTargetIds.has(it.id))
-      .map((it) => (it.id === ownedBuild.id ? updatedBuild : it));
-
-    const nextPlayers = state.players.map((p) =>
-      p.seat === dugFromSeat
-        ? { ...p, capturedCards: p.capturedCards.slice(0, -1) }
-        : p
+    const nextTable = appendComponentToOwnedBuild(
+      state.table,
+      ownedBuild,
+      resolved.uniqueIds,
+      [dugCard, ...resolved.cards]
     );
 
-    const looseLabels = targetLooseCards.map((c) => c.label).join(' + ');
-    const description = `Dug ${dugCard.label} + ${looseLabels} into Build ${ownedBuild.targetValue}`;
+    const nextPlayers = shouldPopFromSource
+      ? state.players.map((p) =>
+          p.seat === dugFromSeat
+            ? { ...p, capturedCards: p.capturedCards.slice(0, -1) }
+            : p
+        )
+      : state.players.slice();
+
+    const looseLabels = resolved.cards.map((c) => c.label).join(' + ');
+    const description = `Dug ${dugCard.label} + ${looseLabels} into Build ${formatBuildRank(ownedBuild.targetValue)}`;
 
     events.push({
       id: `ev:bld:${state.turnCount}`,
@@ -366,11 +380,152 @@ export function applySACasinoAction(
         players: nextPlayers,
         table: nextTable,
         turnCount: state.turnCount + 1,
+        activeDugCard: null,
         lastActionSummary: {
           seat: action.playerSeat,
           playerName: activePlayer.name,
           actionType: 'CEMENT',
           description,
+          swept: false,
+          playedCard: null,
+        },
+      },
+      events,
+    };
+  }
+
+  if (action.type === 'MERGE_LOOSE_TO_BUILD') {
+    if (state.activeDugCard !== null) {
+      return {
+        state,
+        events,
+        error: 'You must finish playing or capturing the card you took from your opponent.',
+      };
+    }
+
+    const { buildId, targetItemIds } = action.payload;
+    const ownedBuild = state.table.find(
+      (it): it is TableBuildStack =>
+        it.kind === 'build' && it.id === buildId && it.ownerSeat === action.playerSeat
+    );
+    if (!ownedBuild) {
+      return {
+        state,
+        events,
+        error: 'You can only merge loose table cards into your own active build.',
+      };
+    }
+
+    const resolved = resolveNumericLooseTargets(
+      state.table,
+      targetItemIds,
+      'Select at least one loose table card to move into your build.'
+    );
+    if ('error' in resolved) {
+      return { state, events, error: resolved.error };
+    }
+
+    const combinedSum = resolved.cards.reduce((sum, c) => sum + c.rank, 0);
+    if (combinedSum !== ownedBuild.targetValue) {
+      return {
+        state,
+        events,
+        error: `Selected loose cards (${combinedSum}) do not equal Build ${formatBuildRank(ownedBuild.targetValue)}.`,
+      };
+    }
+
+    const nextTable = appendComponentToOwnedBuild(
+      state.table,
+      ownedBuild,
+      resolved.uniqueIds,
+      resolved.cards
+    );
+
+    const looseLabels = resolved.cards.map((c) => c.label).join(' + ');
+    const description = `Moved ${looseLabels} into Build ${formatBuildRank(ownedBuild.targetValue)}`;
+
+    events.push({
+      id: `ev:bld:${state.turnCount}`,
+      type: 'BUILD_CEMENTED',
+      data: {
+        seat: action.playerSeat,
+        playedCard: null,
+        targetValue: ownedBuild.targetValue,
+        isCemented: true,
+      },
+    });
+
+    return {
+      state: {
+        ...state,
+        table: nextTable,
+        turnCount: state.turnCount + 1,
+        lastActionSummary: {
+          seat: action.playerSeat,
+          playerName: activePlayer.name,
+          actionType: 'CEMENT',
+          description,
+          swept: false,
+          playedCard: null,
+        },
+      },
+      events,
+    };
+  }
+
+  if (action.type === 'PULL_OPPONENT_TOP_CARD') {
+    if (state.activeDugCard !== null) {
+      return {
+        state,
+        events,
+        error: 'You must finish playing or capturing the card you took from your opponent.',
+      };
+    }
+
+    const { sourceSeat, targetItemId = null } = action.payload;
+    if (sourceSeat === action.playerSeat) {
+      return { state, events, error: 'Cannot dig your own captured pile.' };
+    }
+    const sourcePlayer = state.players.find((p) => p.seat === sourceSeat);
+    if (!sourcePlayer || sourcePlayer.capturedCards.length === 0) {
+      return { state, events, error: 'Target opponent has no top captured card to pull.' };
+    }
+
+    const pullCheck = canPullOpponentTopCard(
+      sourceSeat,
+      activePlayer.hand,
+      state.table,
+      action.playerSeat,
+      state.players,
+      isFinalDealCardInState(state),
+      targetItemId
+    );
+    if (!pullCheck.valid) {
+      return { state, events, error: pullCheck.reason };
+    }
+
+    const dugCard = sourcePlayer.capturedCards[sourcePlayer.capturedCards.length - 1];
+    const nextPlayers = state.players.map((p) =>
+      p.seat === sourceSeat
+        ? { ...p, capturedCards: p.capturedCards.slice(0, -1) }
+        : p
+    );
+
+    return {
+      state: {
+        ...state,
+        players: nextPlayers,
+        turnCount: state.turnCount + 1,
+        activeDugCard: {
+          sourceSeat,
+          card: dugCard,
+          attachedTargetId: targetItemId,
+        },
+        lastActionSummary: {
+          seat: action.playerSeat,
+          playerName: activePlayer.name,
+          actionType: 'DIG',
+          description: `Pulled ${dugCard.label} from ${sourcePlayer.name}`,
           swept: false,
           playedCard: null,
         },
@@ -387,9 +542,17 @@ export function applySACasinoAction(
   const remainingHand = activePlayer.hand.filter((c) => c.id !== playedCard.id);
 
   if (action.type === 'TRAIL') {
+    if (state.activeDugCard !== null) {
+      return {
+        state,
+        events,
+        error: 'You must finish playing or capturing the card you took from your opponent.',
+      };
+    }
     const check = canTrailCard(playedCard, activePlayer.hand, state.table, action.playerSeat, {
       isRound1Of1v1: state.mode === '1v1' && state.roundNumber === 1,
       players: state.players,
+      activeDugCard: state.activeDugCard,
     });
     if (!check.valid) {
       return { state, events, error: check.reason };
@@ -433,6 +596,13 @@ export function applySACasinoAction(
 
   if (action.type === 'CAPTURE') {
     const dugSeat = action.payload.dugCapturedFromSeat ?? null;
+    if (state.activeDugCard !== null && dugSeat !== state.activeDugCard.sourceSeat) {
+      return {
+        state,
+        events,
+        error: 'You must finish playing or capturing the card you took from your opponent.',
+      };
+    }
     const check = validateCaptureSelection(
       playedCard,
       activePlayer.hand,
@@ -440,7 +610,8 @@ export function applySACasinoAction(
       action.payload.capturedItemIds,
       action.playerSeat,
       state.players,
-      dugSeat
+      dugSeat,
+      state.activeDugCard
     );
     if (!check.valid) {
       return { state, events, error: check.reason };
@@ -450,12 +621,16 @@ export function applySACasinoAction(
     const capturedItems = state.table.filter((it) => capturedSet.has(it.id));
     const nextTable = state.table.filter((it) => !capturedSet.has(it.id));
 
-    const dugSourcePlayer =
-      dugSeat !== null ? state.players.find((p) => p.seat === dugSeat) : undefined;
-    const dugCard =
-      dugSourcePlayer && dugSourcePlayer.capturedCards.length > 0
-        ? dugSourcePlayer.capturedCards[dugSourcePlayer.capturedCards.length - 1]
-        : null;
+    let dugCard: Card | null = null;
+    if (state.activeDugCard !== null) {
+      dugCard = state.activeDugCard.card;
+    } else if (dugSeat !== null) {
+      const dugSourcePlayer = state.players.find((p) => p.seat === dugSeat);
+      dugCard =
+        dugSourcePlayer && dugSourcePlayer.capturedCards.length > 0
+          ? dugSourcePlayer.capturedCards[dugSourcePlayer.capturedCards.length - 1]
+          : null;
+    }
 
     // Strict LIFO capture ordering: captured table/dug cards first, playedCard LAST (on top face-up)
     const wonCards: Card[] = [];
@@ -471,6 +646,7 @@ export function applySACasinoAction(
     const isSweep =
       nextTable.length === 0 && !isFinalDealCardInState(state);
 
+    const shouldPopDugFromSource = state.activeDugCard === null && dugSeat !== null;
     const nextPlayers = state.players.map((p) => {
       if (p.seat === action.playerSeat) {
         return {
@@ -480,7 +656,7 @@ export function applySACasinoAction(
           sweeps: p.sweeps + (isSweep ? 1 : 0),
         };
       }
-      if (dugSeat !== null && p.seat === dugSeat) {
+      if (shouldPopDugFromSource && p.seat === dugSeat) {
         return {
           ...p,
           capturedCards: p.capturedCards.slice(0, -1),
@@ -533,15 +709,24 @@ export function applySACasinoAction(
   }
 
   if (action.type === 'BUILD') {
+    const inputDugSeat = action.payload.dugCapturedFromSeat ?? null;
+    if (state.activeDugCard !== null && inputDugSeat !== state.activeDugCard.sourceSeat) {
+      return {
+        state,
+        events,
+        error: 'You must finish playing or capturing the card you took from your opponent.',
+      };
+    }
+
     const validBuilds = findValidBuildOptions(
       playedCard,
       activePlayer.hand,
       state.table,
       action.playerSeat,
-      state.players
+      state.players,
+      state.activeDugCard
     );
     const sortedInputIds = action.payload.targetItemIds.slice().sort().join(',');
-    const inputDugSeat = action.payload.dugCapturedFromSeat ?? null;
     const matchingOption: BuildOption | undefined = validBuilds.find(
       (opt) =>
         opt.targetValue === action.payload.targetValue &&
@@ -559,26 +744,10 @@ export function applySACasinoAction(
     }
 
     const usedIds = new Set(matchingOption.targetItemIds);
-    const dugSourcePlayer =
-      inputDugSeat !== null ? state.players.find((p) => p.seat === inputDugSeat) : undefined;
-    const dugCard =
-      dugSourcePlayer && dugSourcePlayer.capturedCards.length > 0
-        ? dugSourcePlayer.capturedCards[dugSourcePlayer.capturedCards.length - 1]
-        : null;
-
-    const allCards: Card[] = [playedCard];
-    if (dugCard) {
-      allCards.push(dugCard);
-    }
-    for (const it of matchingOption.targetItems) {
-      if (it.kind === 'loose') allCards.push(it.card);
-      else allCards.push(...it.cards);
-    }
-
     const newBuild: TableBuildStack = {
       kind: 'build',
       id: `build:${state.turnCount}:${playedCard.id}:${matchingOption.targetValue}`,
-      cards: allCards,
+      cards: matchingOption.components.flat(),
       components: matchingOption.components,
       targetValue: matchingOption.targetValue,
       ownerSeat: action.playerSeat,
@@ -609,11 +778,12 @@ export function applySACasinoAction(
       };
     }
 
+    const shouldPopDugFromSource = state.activeDugCard === null && inputDugSeat !== null;
     const nextPlayers = state.players.map((p) => {
       if (p.seat === action.playerSeat) {
         return { ...p, hand: remainingHand };
       }
-      if (inputDugSeat !== null && p.seat === inputDugSeat) {
+      if (shouldPopDugFromSource && p.seat === inputDugSeat) {
         return { ...p, capturedCards: p.capturedCards.slice(0, -1) };
       }
       return p;
@@ -658,6 +828,51 @@ export function applySACasinoAction(
   }
 
   return { state, events, error: 'Unsupported action type.' };
+}
+
+function resolveNumericLooseTargets(
+  table: readonly TableItem[],
+  targetItemIds: readonly string[],
+  emptyMessage: string
+): { cards: Card[]; uniqueIds: Set<string> } | { error: string } {
+  if (targetItemIds.length === 0) {
+    return { error: emptyMessage };
+  }
+  const uniqueIds = new Set(targetItemIds);
+  if (uniqueIds.size !== targetItemIds.length) {
+    return { error: 'Duplicate table targets selected.' };
+  }
+  const cards: Card[] = [];
+  for (const id of targetItemIds) {
+    const found = table.find((it) => it.id === id);
+    if (!found || found.kind !== 'loose' || found.card.isFaceCard) {
+      return { error: 'Selected merge targets must be numeric loose table cards.' };
+    }
+    cards.push(found.card);
+  }
+  return { cards, uniqueIds };
+}
+
+function appendComponentToOwnedBuild(
+  table: readonly TableItem[],
+  ownedBuild: TableBuildStack,
+  consumedIds: ReadonlySet<string>,
+  rawGroup: readonly Card[]
+): TableItem[] {
+  const sortedGroup = sortComponentDesc(rawGroup);
+  const nextComponents = [
+    ...ownedBuild.components.map((g) => g.slice()),
+    sortedGroup,
+  ];
+  const updatedBuild: TableBuildStack = {
+    ...ownedBuild,
+    cards: nextComponents.flat(),
+    components: nextComponents,
+    isCemented: true,
+  };
+  return table
+    .filter((it) => !consumedIds.has(it.id))
+    .map((it) => (it.id === ownedBuild.id ? updatedBuild : it));
 }
 
 /**
@@ -710,6 +925,7 @@ export function getSACasinoPlayerView(
     matchScores: state.matchScores,
     phase: state.phase,
     turnCount: state.turnCount,
+    activeDugCard: state.activeDugCard,
     lastActionSummary: state.lastActionSummary,
     dealScoreBreakdown: state.dealScoreBreakdown,
   };
